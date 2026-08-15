@@ -54,8 +54,8 @@ Python 3.9+, standard library only. Options:
 python3 scripts/build_data.py --start 2024-01-01 --min-depth 2.0
 ```
 
-This writes `data/market.json`, `data/dips.json`, `data/post_volume.json` and
-`data/meta.json`, all of which are committed to the repo — that is the "database."
+This writes `data/market.json`, `data/dips.json` and `data/meta.json`, all of
+which are committed to the repo — that is the "database."
 
 Sources:
 

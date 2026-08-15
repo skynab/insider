@@ -469,12 +469,6 @@ def main():
 
     primary = market[PRIMARY]["series"]
 
-    # A small daily posting-volume series for the context strip under the chart.
-    volume = {}
-    for post in posts:
-        day = post["ts"].astimezone(ET).strftime("%Y-%m-%d")
-        volume[day] = volume.get(day, 0) + 1
-
     (DATA / "market.json").write_text(json.dumps(market, separators=(",", ":")))
     (DATA / "dips.json").write_text(json.dumps(
         {
@@ -484,7 +478,6 @@ def main():
             "indices": dips_by_index,
         },
         separators=(",", ":")))
-    (DATA / "post_volume.json").write_text(json.dumps(volume, separators=(",", ":")))
     (DATA / "meta.json").write_text(json.dumps({
         "built_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "start": args.start,
@@ -498,7 +491,7 @@ def main():
         },
     }, indent=2))
 
-    for name in ("market.json", "dips.json", "post_volume.json", "meta.json"):
+    for name in ("market.json", "dips.json", "meta.json"):
         size = (DATA / name).stat().st_size
         print(f"wrote data/{name}  ({size/1024:.0f} KB)", file=sys.stderr)
 

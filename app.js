@@ -12,6 +12,7 @@
     meta: null,
     indexKey: "spx",
     minDepth: 2,
+    kind: "all", // all | drawdown | shock
     selectedId: null,
     domain: null, // [Date, Date] current zoom, null = full
   };
@@ -51,11 +52,17 @@
     return state.market[state.indexKey].series;
   }
 
-  /** Dips for the active index, filtered by the depth slider. */
+  /** Events for the active index, filtered by size and type. */
   function activeDips() {
     return state.dipsByIndex[state.indexKey].filter(
-      (d) => d.depth_pct >= state.minDepth
+      (d) =>
+        d.depth_pct >= state.minDepth &&
+        (state.kind === "all" || d.kind === state.kind)
     );
+  }
+
+  function drawdowns() {
+    return activeDips().filter((d) => d.kind === "drawdown");
   }
 
   function selectedDip() {
@@ -109,6 +116,14 @@
       renderAll();
     });
 
+    d3.selectAll("#kind-toggle button").on("click", function () {
+      state.kind = this.dataset.kind;
+      d3.selectAll("#kind-toggle button").classed("is-active", false);
+      d3.select(this).classed("is-active", true);
+      if (!selectedDip()) state.selectedId = null;
+      renderAll();
+    });
+
     d3.selectAll("#view-toggle button").on("click", function () {
       const view = this.dataset.view;
       d3.selectAll("#view-toggle button").classed("is-active", false);
@@ -134,10 +149,12 @@
 
   function renderHeadStats() {
     const all = state.dipsByIndex[state.indexKey];
-    const deepest = d3.max(all, (d) => d.depth_pct);
+    const deepest = d3.max(all.filter((d) => d.kind === "drawdown"), (d) => d.depth_pct);
+    const worstDay = d3.min(all, (d) => d.worst_day_pct);
     const stats = [
-      { k: "Dips tracked", v: all.length },
-      { k: "Deepest", v: "−" + deepest.toFixed(1) + "%" },
+      { k: "Events tracked", v: all.length },
+      { k: "Deepest drawdown", v: "−" + deepest.toFixed(1) + "%" },
+      { k: "Worst session", v: "−" + Math.abs(worstDay).toFixed(1) + "%" },
       { k: "Posts scanned", v: state.meta.post_count.toLocaleString() },
     ];
     const sel = d3
@@ -191,15 +208,29 @@
 
     const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
+    // Everything data-bound is clipped to the plot area so a zoomed-in band or
+    // marker never bleeds over the axes.
+    svg
+      .append("clipPath")
+      .attr("id", "focus-clip")
+      .append("rect")
+      .attr("x", -1)
+      .attr("y", -12)
+      .attr("width", iw + 2)
+      .attr("height", ih + 24);
+
     g.append("g")
       .attr("class", "grid")
       .call(d3.axisLeft(y).ticks(6).tickSize(-iw).tickFormat(""));
 
+    const plot = g.append("g").attr("clip-path", "url(#focus-clip)");
+
     // Drawdown bands, drawn under the line.
     const dips = activeDips();
-    g.append("g")
+    plot
+      .append("g")
       .selectAll("rect")
-      .data(dips)
+      .data(drawdowns())
       .join("rect")
       .attr("class", "dip-band")
       .attr("x", (d) => x(parseDay(d.peak_date)))
@@ -216,26 +247,25 @@
       .x((d) => x(d.date))
       .y((d) => y(d.close));
 
-    g.append("path").datum(data).attr("class", "index-line").attr("d", line)
-      .attr("clip-path", "url(#focus-clip)");
+    plot.append("path").datum(data).attr("class", "index-line").attr("d", line);
 
-    svg
-      .append("clipPath")
-      .attr("id", "focus-clip")
-      .append("rect")
-      .attr("width", iw)
-      .attr("height", ih + 8)
-      .attr("y", -4);
-
-    // Trough markers.
-    g.append("g")
-      .selectAll("circle")
+    // Event markers: circles for drawdown troughs, diamonds for single-session
+    // shocks, so the two classes stay distinguishable without relying on color.
+    const symbol = d3.symbol();
+    plot
+      .append("g")
+      .selectAll("path")
       .data(dips)
-      .join("circle")
-      .attr("class", (d) => "trough-dot" + (d.id === state.selectedId ? " is-selected" : ""))
-      .attr("cx", (d) => x(parseDay(d.trough_date)))
-      .attr("cy", (d) => y(d.trough_close))
-      .attr("r", (d) => Math.max(4.5, Math.min(11, 3 + d.depth_pct * 0.7)))
+      .join("path")
+      .attr("class", (d) =>
+        "trough-dot marker-" + d.kind + (d.id === state.selectedId ? " is-selected" : "")
+      )
+      .attr("transform", (d) => `translate(${x(parseDay(d.trough_date))},${y(d.trough_close)})`)
+      .attr("d", (d) =>
+        symbol
+          .type(d.kind === "shock" ? d3.symbolDiamond : d3.symbolCircle)
+          .size(markerArea(d.depth_pct))()
+      )
       .on("mousemove", (event, d) => showTip(dipTip(d), event))
       .on("mouseleave", hideTip)
       .on("click", (event, d) => {
@@ -282,10 +312,20 @@
       });
   }
 
+  /** Marker area in px², scaled so a 2% and a 19% dip both stay legible. */
+  function markerArea(depth) {
+    const r = Math.max(4.5, Math.min(11, 3 + depth * 0.7));
+    return Math.PI * r * r;
+  }
+
   function dipTip(d) {
-    return `<div class="tt-date">${fmtShortDay(parseDay(d.peak_date))} → ${fmtDay(parseDay(d.trough_date))}</div>
+    const span =
+      d.kind === "shock"
+        ? fmtDay(parseDay(d.trough_date)) + " · single session"
+        : `${fmtShortDay(parseDay(d.peak_date))} → ${fmtDay(parseDay(d.trough_date))} · ${d.trading_days} sessions`;
+    return `<div class="tt-date">${span}</div>
             <div class="tt-value move neg">−${d.depth_pct.toFixed(2)}%</div>
-            <div class="tt-date">${d.trading_days} sessions · ${d.posts.length} candidate post${d.posts.length === 1 ? "" : "s"}</div>`;
+            <div class="tt-date">${d.posts.length} candidate post${d.posts.length === 1 ? "" : "s"}</div>`;
   }
 
   // ------------------------------------------------------ context/brush
@@ -313,7 +353,7 @@
 
     g.append("g")
       .selectAll("rect")
-      .data(activeDips())
+      .data(drawdowns())
       .join("rect")
       .attr("class", "dip-band")
       .style("pointer-events", "none")
@@ -378,7 +418,11 @@
     left
       .append("div")
       .attr("class", "li-sub")
-      .text((d) => `${d.trading_days} sessions · ${d.posts.length} post${d.posts.length === 1 ? "" : "s"}`);
+      .text(
+        (d) =>
+          (d.kind === "shock" ? "Single session" : `${d.trading_days} sessions`) +
+          ` · ${d.posts.length} post${d.posts.length === 1 ? "" : "s"}`
+      );
     items
       .append("div")
       .attr("class", "li-depth")
@@ -400,13 +444,21 @@
     const cell = (fn, cls) =>
       rows.append("td").attr("class", cls || null).text(fn);
 
+    cell((d) => (d.kind === "shock" ? "Shock" : "Drawdown"));
     cell((d) => fmtDay(parseDay(d.peak_date)));
     cell((d) => fmtDay(parseDay(d.trough_date)));
     cell((d) => "−" + d.depth_pct.toFixed(2) + "%", "num");
-    cell((d) => d.worst_day_pct.toFixed(2) + "%", "num");
+    cell((d) => "−" + Math.abs(d.worst_day_pct).toFixed(2) + "%", "num");
     cell((d) => d.trading_days, "num");
     cell((d) => d.posts.length, "num");
     cell((d) => (d.posts[0] ? truncate(d.posts[0].text, 90) : "—"));
+  }
+
+  /** Human lead time — minutes under an hour, days past two. */
+  function lead(hours) {
+    if (hours < 1) return Math.round(hours * 60) + " min";
+    if (hours < 48) return Math.round(hours) + "h";
+    return Math.round(hours / 24) + " days";
   }
 
   function truncate(text, n) {
@@ -432,26 +484,38 @@
       .append("h2")
       .text(`−${dip.depth_pct.toFixed(2)}% into ${fmtDay(parseDay(dip.trough_date))}`);
 
+    const label = state.market[state.indexKey].label;
     host
       .append("p")
       .attr("class", "sub")
       .text(
-        `${state.market[state.indexKey].label} fell from ${fmtNum(dip.peak_close)} on ` +
-          `${fmtDay(parseDay(dip.peak_date))} to ${fmtNum(dip.trough_close)} over ` +
-          `${dip.trading_days} sessions` +
-          (dip.recovery_date
-            ? `, and reclaimed the old high on ${fmtDay(parseDay(dip.recovery_date))} ` +
-              `(${dip.recovery_days} sessions later).`
-            : ", and has not yet reclaimed that high.")
+        dip.kind === "shock"
+          ? `${label} closed at ${fmtNum(dip.trough_close)}, down from ` +
+            `${fmtNum(dip.peak_close)} the session before — its ` +
+            `#${dip.rank} worst single session since 2024.`
+          : `${label} fell from ${fmtNum(dip.peak_close)} on ` +
+            `${fmtDay(parseDay(dip.peak_date))} to ${fmtNum(dip.trough_close)} over ` +
+            `${dip.trading_days} sessions` +
+            (dip.recovery_date
+              ? `, and reclaimed the old high on ${fmtDay(parseDay(dip.recovery_date))} ` +
+                `(${dip.recovery_days} sessions later).`
+              : ", and has not yet reclaimed that high.")
       );
 
-    const stats = [
-      { k: "Depth", v: "−" + dip.depth_pct.toFixed(2) + "%", cls: "neg" },
-      { k: "Worst session", v: dip.worst_day_pct.toFixed(2) + "%", cls: "neg" },
-      { k: "Worst day", v: fmtShortDay(parseDay(dip.worst_day)) },
-      { k: "Rank by depth", v: "#" + dip.rank },
-      { k: "Posts in window", v: dip.posts_considered },
-    ];
+    const stats =
+      dip.kind === "shock"
+        ? [
+            { k: "One-day move", v: "−" + Math.abs(dip.worst_day_pct).toFixed(2) + "%", cls: "neg" },
+            { k: "Rank by size", v: "#" + dip.rank },
+            { k: "Posts in window", v: dip.posts_considered },
+          ]
+        : [
+            { k: "Depth", v: "−" + dip.depth_pct.toFixed(2) + "%", cls: "neg" },
+            { k: "Worst session", v: "−" + Math.abs(dip.worst_day_pct).toFixed(2) + "%", cls: "neg" },
+            { k: "Worst day", v: fmtShortDay(parseDay(dip.worst_day)) },
+            { k: "Rank by depth", v: "#" + dip.rank },
+            { k: "Posts in window", v: dip.posts_considered },
+          ];
     const row = host.append("div").attr("class", "stat-row");
     const stat = row.selectAll("div").data(stats).join("div").attr("class", "stat");
     stat.append("span").attr("class", (d) => "v " + (d.cls || "")).text((d) => d.v);
@@ -464,9 +528,11 @@
       .attr("class", "posts-note")
       .text(
         dip.posts.length
-          ? `Top ${dip.posts.length} of ${dip.posts_considered} market-relevant posts published between ` +
-            `${fmtShortDay(parseDay(dip.peak_date))} and ${fmtShortDay(parseDay(dip.trough_date))}, ` +
-            "ranked by subject relevance, proximity to the worst session, and engagement."
+          ? `Top ${dip.posts.length} of ${dip.posts_considered} market-relevant posts published ` +
+            (dip.kind === "shock"
+              ? `between the previous close and this one — the only posts that could have moved it. `
+              : `between ${fmtShortDay(parseDay(dip.peak_date))} and ${fmtShortDay(parseDay(dip.trough_date))}. `) +
+            "Ranked by subject relevance, proximity to the worst session, and engagement."
           : "No market-relevant posts were published during this window."
       );
 
@@ -479,9 +545,11 @@
       .text((p) => {
         const when = new Date(p.ts);
         const rel =
-          p.hours_before_worst >= 0
-            ? `${p.hours_before_worst.toFixed(0)}h before worst session`
-            : `${Math.abs(p.hours_before_worst).toFixed(0)}h after worst session`;
+          p.phase === "before"
+            ? `${lead(p.lead_hours)} before the worst session opened`
+            : p.phase === "during"
+            ? "during the worst session"
+            : `${lead(Math.abs(p.lead_hours))} after that session closed — post-hoc`;
         return `${when.toLocaleString(undefined, {
           month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
         })} · ${rel}`;
@@ -496,9 +564,9 @@
       .html((p) =>
         p.next_session_pct == null
           ? ""
-          : `Next session (${p.next_session}): <span class="move ${
-              p.next_session_pct < 0 ? "neg" : "pos"
-            }">${fmtPct(p.next_session_pct)}%</span>`
+          : `First session the post could reach (${fmtShortDay(parseDay(p.next_session))}): ` +
+            `<span class="move ${p.next_session_pct < 0 ? "neg" : "pos"}">` +
+            `${fmtPct(p.next_session_pct)}%</span>`
       );
     foot.append("span").text((p) => `${p.likes.toLocaleString()} likes`);
     foot
