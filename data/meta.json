@@ -1,0 +1,20 @@
+{
+  "built_at": "2026-08-15T16:21:41.591938Z",
+  "start": "2024-01-01",
+  "min_depth_pct": 2.0,
+  "dip_count": {
+    "spx": 50,
+    "ndx": 80,
+    "dji": 40
+  },
+  "post_count": 15917,
+  "last_session": "2026-08-14",
+  "sources": {
+    "prices": {
+      "spx": "FRED SP500",
+      "ndx": "FRED NASDAQCOM",
+      "dji": "FRED DJIA"
+    },
+    "posts": "stiles/trump-truth-social-archive via ix.cnn.io"
+  }
+}

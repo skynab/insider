@@ -1,0 +1,530 @@
+/* Insider — interactive drawdown explorer.
+   Reads the static JSON built by scripts/build_data.py. No network calls at
+   runtime beyond those files, so this runs fine from GitHub Pages or file://
+   served by any static server. */
+
+(function () {
+  "use strict";
+
+  const state = {
+    market: null,
+    dipsByIndex: null,
+    meta: null,
+    indexKey: "spx",
+    minDepth: 2,
+    selectedId: null,
+    domain: null, // [Date, Date] current zoom, null = full
+  };
+
+  const parseDay = d3.timeParse("%Y-%m-%d");
+  const fmtDay = d3.timeFormat("%b %-d, %Y");
+  const fmtShortDay = d3.timeFormat("%b %-d");
+  const fmtNum = d3.format(",.0f");
+  const fmtPct = d3.format("+.2f");
+
+  const tooltip = d3.select("body").append("div").attr("class", "tooltip");
+
+  // ------------------------------------------------------------ data load
+
+  Promise.all([
+    d3.json("data/market.json"),
+    d3.json("data/dips.json"),
+    d3.json("data/meta.json"),
+  ])
+    .then(([market, dips, meta]) => {
+      state.market = market;
+      state.dipsByIndex = dips.indices;
+      state.meta = meta;
+      state.indexKey = dips.primary || "spx";
+      init();
+    })
+    .catch((err) => {
+      document.querySelector("#focus-chart").innerHTML =
+        '<p class="empty">Could not load data/. Run <code>python3 scripts/build_data.py</code> ' +
+        "and serve this folder over http (not file://).</p>";
+      console.error(err);
+    });
+
+  // ------------------------------------------------------------- helpers
+
+  function series() {
+    return state.market[state.indexKey].series;
+  }
+
+  /** Dips for the active index, filtered by the depth slider. */
+  function activeDips() {
+    return state.dipsByIndex[state.indexKey].filter(
+      (d) => d.depth_pct >= state.minDepth
+    );
+  }
+
+  function selectedDip() {
+    return activeDips().find((d) => d.id === state.selectedId) || null;
+  }
+
+  function showTip(html, event) {
+    tooltip.html(html).classed("is-visible", true);
+    const node = tooltip.node();
+    const w = node.offsetWidth;
+    const h = node.offsetHeight;
+    let x = event.clientX + 14;
+    let y = event.clientY - h - 12;
+    if (x + w > window.innerWidth - 8) x = event.clientX - w - 14;
+    if (y < 8) y = event.clientY + 18;
+    tooltip.style("left", x + "px").style("top", y + "px");
+  }
+
+  function hideTip() {
+    tooltip.classed("is-visible", false);
+  }
+
+  // ---------------------------------------------------------------- init
+
+  function init() {
+    const sel = d3.select("#index-select");
+    sel
+      .selectAll("option")
+      .data(Object.keys(state.market))
+      .join("option")
+      .attr("value", (k) => k)
+      .property("selected", (k) => k === state.indexKey)
+      .text((k) => state.market[k].label);
+
+    sel.on("change", function () {
+      state.indexKey = this.value;
+      state.selectedId = null;
+      state.domain = null;
+      renderAll();
+    });
+
+    d3.select("#depth-range").on("input", function () {
+      state.minDepth = +this.value;
+      d3.select("#depth-out").text(d3.format(".1f")(state.minDepth) + "%");
+      if (selectedDip() === null) state.selectedId = null;
+      renderAll();
+    });
+
+    d3.select("#reset-zoom").on("click", () => {
+      state.domain = null;
+      renderAll();
+    });
+
+    d3.selectAll("#view-toggle button").on("click", function () {
+      const view = this.dataset.view;
+      d3.selectAll("#view-toggle button").classed("is-active", false);
+      d3.select(this).classed("is-active", true);
+      d3.select("#chart-view").attr("hidden", view === "chart" ? null : true);
+      d3.select("#table-view").attr("hidden", view === "table" ? null : true);
+    });
+
+    window.addEventListener("resize", debounce(renderAll, 160));
+
+    renderHeadStats();
+    d3.select("#build-stamp").text(
+      "Data built " +
+        new Date(state.meta.built_at).toLocaleString() +
+        " · " +
+        state.meta.post_count.toLocaleString() +
+        " posts scanned · last session " +
+        state.meta.last_session
+    );
+
+    renderAll();
+  }
+
+  function renderHeadStats() {
+    const all = state.dipsByIndex[state.indexKey];
+    const deepest = d3.max(all, (d) => d.depth_pct);
+    const stats = [
+      { k: "Dips tracked", v: all.length },
+      { k: "Deepest", v: "−" + deepest.toFixed(1) + "%" },
+      { k: "Posts scanned", v: state.meta.post_count.toLocaleString() },
+    ];
+    const sel = d3
+      .select("#head-stats")
+      .selectAll("div")
+      .data(stats)
+      .join("div");
+    sel.selectAll("dt").data((d) => [d]).join("dt").text((d) => d.k);
+    sel.selectAll("dd").data((d) => [d]).join("dd").text((d) => d.v);
+  }
+
+  function renderAll() {
+    d3.select("#fig-title").text(state.market[state.indexKey].label + " daily close");
+    renderHeadStats();
+    drawFocus();
+    drawContext();
+    renderDipList();
+    renderTable();
+    renderDetail();
+  }
+
+  // -------------------------------------------------------- focus chart
+
+  function drawFocus() {
+    const host = d3.select("#focus-chart");
+    host.selectAll("*").remove();
+
+    const data = series().map((r) => ({ date: parseDay(r.d), close: r.c, chg: r.chg }));
+    const width = host.node().clientWidth || 900;
+    const height = 380;
+    const margin = { top: 12, right: 18, bottom: 26, left: 56 };
+    const iw = width - margin.left - margin.right;
+    const ih = height - margin.top - margin.bottom;
+
+    const domain = state.domain || d3.extent(data, (d) => d.date);
+    const inView = data.filter((d) => d.date >= domain[0] && d.date <= domain[1]);
+    const view = inView.length > 1 ? inView : data;
+
+    const x = d3.scaleUtc().domain(domain).range([0, iw]);
+    const y = d3
+      .scaleLinear()
+      .domain(d3.extent(view, (d) => d.close))
+      .nice()
+      .range([ih, 0]);
+
+    const svg = host
+      .append("svg")
+      .attr("viewBox", `0 0 ${width} ${height}`)
+      .attr("role", "img")
+      .attr("aria-label", state.market[state.indexKey].label + " daily closing level with drawdown episodes highlighted");
+
+    const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+    g.append("g")
+      .attr("class", "grid")
+      .call(d3.axisLeft(y).ticks(6).tickSize(-iw).tickFormat(""));
+
+    // Drawdown bands, drawn under the line.
+    const dips = activeDips();
+    g.append("g")
+      .selectAll("rect")
+      .data(dips)
+      .join("rect")
+      .attr("class", "dip-band")
+      .attr("x", (d) => x(parseDay(d.peak_date)))
+      .attr("width", (d) => Math.max(1.5, x(parseDay(d.trough_date)) - x(parseDay(d.peak_date))))
+      .attr("y", 0)
+      .attr("height", ih)
+      .on("mousemove", (event, d) => showTip(dipTip(d), event))
+      .on("mouseleave", hideTip)
+      .on("click", (event, d) => selectDip(d.id));
+
+    const line = d3
+      .line()
+      .defined((d) => d.close != null)
+      .x((d) => x(d.date))
+      .y((d) => y(d.close));
+
+    g.append("path").datum(data).attr("class", "index-line").attr("d", line)
+      .attr("clip-path", "url(#focus-clip)");
+
+    svg
+      .append("clipPath")
+      .attr("id", "focus-clip")
+      .append("rect")
+      .attr("width", iw)
+      .attr("height", ih + 8)
+      .attr("y", -4);
+
+    // Trough markers.
+    g.append("g")
+      .selectAll("circle")
+      .data(dips)
+      .join("circle")
+      .attr("class", (d) => "trough-dot" + (d.id === state.selectedId ? " is-selected" : ""))
+      .attr("cx", (d) => x(parseDay(d.trough_date)))
+      .attr("cy", (d) => y(d.trough_close))
+      .attr("r", (d) => Math.max(4.5, Math.min(11, 3 + d.depth_pct * 0.7)))
+      .on("mousemove", (event, d) => showTip(dipTip(d), event))
+      .on("mouseleave", hideTip)
+      .on("click", (event, d) => {
+        event.stopPropagation();
+        selectDip(d.id);
+      });
+
+    g.append("g")
+      .attr("class", "axis")
+      .attr("transform", `translate(0,${ih})`)
+      .call(d3.axisBottom(x).ticks(Math.max(3, Math.floor(iw / 110))));
+
+    g.append("g")
+      .attr("class", "axis")
+      .call(d3.axisLeft(y).ticks(6).tickFormat(d3.format(",")));
+
+    // Crosshair + tooltip layer.
+    const cross = g.append("line").attr("class", "crosshair").attr("y1", 0).attr("y2", ih).style("opacity", 0);
+    const dot = g.append("circle").attr("class", "hover-dot").attr("r", 4.5).style("opacity", 0);
+    const bisect = d3.bisector((d) => d.date).center;
+
+    g.append("rect")
+      .attr("width", iw)
+      .attr("height", ih)
+      .attr("fill", "transparent")
+      .on("mousemove", function (event) {
+        const mx = d3.pointer(event, this)[0];
+        const d = data[bisect(data, x.invert(mx))];
+        if (!d) return;
+        cross.attr("x1", x(d.date)).attr("x2", x(d.date)).style("opacity", 1);
+        dot.attr("cx", x(d.date)).attr("cy", y(d.close)).style("opacity", 1);
+        const sign = d.chg >= 0 ? "pos" : "neg";
+        showTip(
+          `<div class="tt-date">${fmtDay(d.date)}</div>
+           <div class="tt-value">${fmtNum(d.close)}</div>
+           <div class="move ${sign}">${fmtPct(d.chg)}%</div>`,
+          event
+        );
+      })
+      .on("mouseleave", () => {
+        cross.style("opacity", 0);
+        dot.style("opacity", 0);
+        hideTip();
+      });
+  }
+
+  function dipTip(d) {
+    return `<div class="tt-date">${fmtShortDay(parseDay(d.peak_date))} → ${fmtDay(parseDay(d.trough_date))}</div>
+            <div class="tt-value move neg">−${d.depth_pct.toFixed(2)}%</div>
+            <div class="tt-date">${d.trading_days} sessions · ${d.posts.length} candidate post${d.posts.length === 1 ? "" : "s"}</div>`;
+  }
+
+  // ------------------------------------------------------ context/brush
+
+  function drawContext() {
+    const host = d3.select("#context-chart");
+    host.selectAll("*").remove();
+
+    const data = series().map((r) => ({ date: parseDay(r.d), close: r.c }));
+    const width = host.node().clientWidth || 900;
+    const height = 66;
+    const margin = { top: 6, right: 18, bottom: 18, left: 56 };
+    const iw = width - margin.left - margin.right;
+    const ih = height - margin.top - margin.bottom;
+
+    const full = d3.extent(data, (d) => d.date);
+    const x = d3.scaleUtc().domain(full).range([0, iw]);
+    const y = d3.scaleLinear().domain(d3.extent(data, (d) => d.close)).range([ih, 0]);
+
+    const svg = host
+      .append("svg")
+      .attr("viewBox", `0 0 ${width} ${height}`)
+      .attr("aria-hidden", "true");
+    const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+    g.append("g")
+      .selectAll("rect")
+      .data(activeDips())
+      .join("rect")
+      .attr("class", "dip-band")
+      .style("pointer-events", "none")
+      .attr("x", (d) => x(parseDay(d.peak_date)))
+      .attr("width", (d) => Math.max(1, x(parseDay(d.trough_date)) - x(parseDay(d.peak_date))))
+      .attr("y", 0)
+      .attr("height", ih);
+
+    g.append("path")
+      .datum(data)
+      .attr("class", "context-line")
+      .attr("d", d3.line().x((d) => x(d.date)).y((d) => y(d.close)));
+
+    g.append("g")
+      .attr("class", "axis")
+      .attr("transform", `translate(0,${ih})`)
+      .call(d3.axisBottom(x).ticks(Math.max(3, Math.floor(iw / 110))));
+
+    const brush = d3
+      .brushX()
+      .extent([[0, 0], [iw, ih]])
+      .on("end", (event) => {
+        if (!event.sourceEvent) return;
+        state.domain = event.selection
+          ? event.selection.map(x.invert)
+          : null;
+        drawFocus();
+      });
+
+    const bg = g.append("g").attr("class", "brush").call(brush);
+    if (state.domain) bg.call(brush.move, state.domain.map(x));
+  }
+
+  // ------------------------------------------------------------ dip list
+
+  function selectDip(id) {
+    state.selectedId = id;
+    drawFocus();
+    renderDipList();
+    renderDetail();
+    document.querySelector("#dip-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function renderDipList() {
+    const dips = activeDips().slice().sort((a, b) => b.depth_pct - a.depth_pct);
+    d3.select("#dip-count").text(`(${dips.length})`);
+
+    const items = d3
+      .select("#dip-items")
+      .selectAll("li")
+      .data(dips, (d) => d.id)
+      .join("li")
+      .attr("class", (d) => (d.id === state.selectedId ? "is-selected" : null))
+      .on("click", (event, d) => selectDip(d.id));
+
+    items.selectAll("*").remove();
+    const left = items.append("div");
+    left
+      .append("div")
+      .attr("class", "li-date")
+      .text((d) => fmtDay(parseDay(d.trough_date)));
+    left
+      .append("div")
+      .attr("class", "li-sub")
+      .text((d) => `${d.trading_days} sessions · ${d.posts.length} post${d.posts.length === 1 ? "" : "s"}`);
+    items
+      .append("div")
+      .attr("class", "li-depth")
+      .text((d) => "−" + d.depth_pct.toFixed(1) + "%");
+  }
+
+  // -------------------------------------------------------------- table
+
+  function renderTable() {
+    const dips = activeDips().slice().sort((a, b) => b.depth_pct - a.depth_pct);
+    const rows = d3
+      .select("#dip-table tbody")
+      .selectAll("tr")
+      .data(dips, (d) => d.id)
+      .join("tr")
+      .on("click", (event, d) => selectDip(d.id));
+
+    rows.selectAll("td").remove();
+    const cell = (fn, cls) =>
+      rows.append("td").attr("class", cls || null).text(fn);
+
+    cell((d) => fmtDay(parseDay(d.peak_date)));
+    cell((d) => fmtDay(parseDay(d.trough_date)));
+    cell((d) => "−" + d.depth_pct.toFixed(2) + "%", "num");
+    cell((d) => d.worst_day_pct.toFixed(2) + "%", "num");
+    cell((d) => d.trading_days, "num");
+    cell((d) => d.posts.length, "num");
+    cell((d) => (d.posts[0] ? truncate(d.posts[0].text, 90) : "—"));
+  }
+
+  function truncate(text, n) {
+    return text.length > n ? text.slice(0, n - 1).trimEnd() + "…" : text;
+  }
+
+  // ------------------------------------------------------------- detail
+
+  function renderDetail() {
+    const host = d3.select("#dip-detail");
+    const dip = selectedDip();
+    host.selectAll("*").remove();
+
+    if (!dip) {
+      host
+        .append("p")
+        .attr("class", "empty")
+        .text("Select a dip on the chart or in the list to see the posts that landed during it.");
+      return;
+    }
+
+    host
+      .append("h2")
+      .text(`−${dip.depth_pct.toFixed(2)}% into ${fmtDay(parseDay(dip.trough_date))}`);
+
+    host
+      .append("p")
+      .attr("class", "sub")
+      .text(
+        `${state.market[state.indexKey].label} fell from ${fmtNum(dip.peak_close)} on ` +
+          `${fmtDay(parseDay(dip.peak_date))} to ${fmtNum(dip.trough_close)} over ` +
+          `${dip.trading_days} sessions` +
+          (dip.recovery_date
+            ? `, and reclaimed the old high on ${fmtDay(parseDay(dip.recovery_date))} ` +
+              `(${dip.recovery_days} sessions later).`
+            : ", and has not yet reclaimed that high.")
+      );
+
+    const stats = [
+      { k: "Depth", v: "−" + dip.depth_pct.toFixed(2) + "%", cls: "neg" },
+      { k: "Worst session", v: dip.worst_day_pct.toFixed(2) + "%", cls: "neg" },
+      { k: "Worst day", v: fmtShortDay(parseDay(dip.worst_day)) },
+      { k: "Rank by depth", v: "#" + dip.rank },
+      { k: "Posts in window", v: dip.posts_considered },
+    ];
+    const row = host.append("div").attr("class", "stat-row");
+    const stat = row.selectAll("div").data(stats).join("div").attr("class", "stat");
+    stat.append("span").attr("class", (d) => "v " + (d.cls || "")).text((d) => d.v);
+    stat.append("span").attr("class", "k").text((d) => d.k);
+
+    const posts = host.append("section").attr("class", "posts");
+    posts.append("h3").text("Candidate Truth Social posts");
+    posts
+      .append("p")
+      .attr("class", "posts-note")
+      .text(
+        dip.posts.length
+          ? `Top ${dip.posts.length} of ${dip.posts_considered} market-relevant posts published between ` +
+            `${fmtShortDay(parseDay(dip.peak_date))} and ${fmtShortDay(parseDay(dip.trough_date))}, ` +
+            "ranked by subject relevance, proximity to the worst session, and engagement."
+          : "No market-relevant posts were published during this window."
+      );
+
+    const cards = posts.selectAll("article").data(dip.posts).join("article").attr("class", "post");
+
+    const head = cards.append("div").attr("class", "post-head");
+    head
+      .append("span")
+      .attr("class", "post-when")
+      .text((p) => {
+        const when = new Date(p.ts);
+        const rel =
+          p.hours_before_worst >= 0
+            ? `${p.hours_before_worst.toFixed(0)}h before worst session`
+            : `${Math.abs(p.hours_before_worst).toFixed(0)}h after worst session`;
+        return `${when.toLocaleString(undefined, {
+          month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+        })} · ${rel}`;
+      });
+    head.append("span").attr("class", "post-score").text((p) => `match ${p.score.toFixed(1)}`);
+
+    cards.append("p").attr("class", "post-text").text((p) => p.text);
+
+    const foot = cards.append("div").attr("class", "post-foot");
+    foot
+      .append("span")
+      .html((p) =>
+        p.next_session_pct == null
+          ? ""
+          : `Next session (${p.next_session}): <span class="move ${
+              p.next_session_pct < 0 ? "neg" : "pos"
+            }">${fmtPct(p.next_session_pct)}%</span>`
+      );
+    foot.append("span").text((p) => `${p.likes.toLocaleString()} likes`);
+    foot
+      .append("a")
+      .attr("href", (p) => p.url)
+      .attr("target", "_blank")
+      .attr("rel", "noopener noreferrer")
+      .text("View on Truth Social");
+
+    cards
+      .append("div")
+      .attr("class", "post-foot")
+      .selectAll("span.chip")
+      .data((p) => p.terms)
+      .join("span")
+      .attr("class", "chip")
+      .text((t) => t);
+  }
+
+  // -------------------------------------------------------------- utils
+
+  function debounce(fn, ms) {
+    let t;
+    return function () {
+      clearTimeout(t);
+      t = setTimeout(fn, ms);
+    };
+  }
+})();
