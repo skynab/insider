@@ -16,6 +16,8 @@
   --good:           #006300;
 
   --dip-fill:       rgba(208, 59, 59, 0.09);
+  --rally:          #1baf7a;
+  --rally-fill:     rgba(27, 175, 122, 0.10);
   --wash:           rgba(11, 11, 11, 0.04);
   --radius:         10px;
 }
@@ -38,6 +40,8 @@
     --good:           #0ca30c;
 
     --dip-fill:       rgba(230, 103, 103, 0.12);
+    --rally:          #199e70;
+    --rally-fill:     rgba(25, 158, 112, 0.15);
     --wash:           rgba(255, 255, 255, 0.06);
   }
 }
@@ -78,6 +82,8 @@ h1 { font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -0.02em; }
 .head-stats div { display: flex; flex-direction: column-reverse; }
 .head-stats dt { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .head-stats dd { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+.head-stats dd.neg { color: var(--critical); }
+.head-stats dd.pos { color: var(--rally); }
 
 .caveat {
   border: 1px solid var(--border);
@@ -149,16 +155,21 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
 .index-line { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .context-line { fill: none; stroke: var(--series-1); stroke-width: 1.5; opacity: 0.75; }
-.dip-band { fill: var(--dip-fill); cursor: pointer; }
-.dip-band:hover { fill: var(--dip-fill); filter: brightness(0.94) saturate(1.4); }
+.dip-band { cursor: pointer; }
+.dip-band.band-down { fill: var(--dip-fill); }
+.dip-band.band-up { fill: var(--rally-fill); }
+.dip-band:hover { filter: brightness(0.94) saturate(1.4); }
 
+/* Direction is carried by the triangle's orientation as well as its color, so
+   the up/down read never depends on telling red from green. */
 .trough-dot {
-  fill: var(--critical);
   stroke: var(--surface-1);
   stroke-width: 2;
   cursor: pointer;
 }
-.trough-dot.marker-shock { fill: var(--series-2); }
+.trough-dot.marker-down { fill: var(--critical); }
+.trough-dot.marker-up { fill: var(--rally); }
+.trough-dot.marker-single { fill-opacity: 0.75; }
 .trough-dot.is-selected { stroke: var(--text-primary); stroke-width: 2.5; }
 
 /* Pointer-transparent so they never intercept a marker hover. */
@@ -172,9 +183,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .legend-item { display: inline-flex; align-items: center; gap: 7px; }
 .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 .swatch-line { background: var(--series-1); }
-.swatch-dip { background: var(--dip-fill); height: 12px; width: 14px; border-radius: 3px; border: 1px solid var(--critical); }
-.swatch-trough { background: var(--critical); height: 10px; width: 10px; border-radius: 50%; }
-.swatch-shock { background: var(--series-2); height: 9px; width: 9px; border-radius: 2px; transform: rotate(45deg); }
+.swatch-down-band { background: var(--dip-fill); height: 12px; width: 14px; border-radius: 3px; border: 1px solid var(--critical); }
+.swatch-up-band { background: var(--rally-fill); height: 12px; width: 14px; border-radius: 3px; border: 1px solid var(--rally); }
+.swatch-down, .swatch-up {
+  width: 0; height: 0; background: none; border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+}
+.swatch-down { border-top: 10px solid var(--critical); }
+.swatch-up { border-bottom: 10px solid var(--rally); }
 
 .load-error {
   border: 1px solid var(--critical);
@@ -274,7 +290,9 @@ tbody tr:hover { background: var(--wash); }
 .dip-list li.is-selected { background: var(--wash); box-shadow: inset 3px 0 0 var(--critical); }
 .dip-list .li-date { font-size: 13px; }
 .dip-list .li-sub { color: var(--text-muted); font-size: 12px; }
-.dip-list .li-depth { font-weight: 600; color: var(--critical); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dip-list .li-depth { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dip-list .li-depth.neg { color: var(--critical); }
+.dip-list .li-depth.pos { color: var(--rally); }
 
 .dip-detail {
   background: var(--surface-1);
@@ -292,7 +310,10 @@ tbody tr:hover { background: var(--wash); }
 .stat .k { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .stat .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .stat .v.neg { color: var(--critical); }
-.stat .v.pos { color: var(--good); }
+.stat .v.pos { color: var(--rally); }
+
+.dip-detail h2.detail-head.neg { color: var(--critical); }
+.dip-detail h2.detail-head.pos { color: var(--rally); }
 
 .posts h3 { font-size: 14px; margin-bottom: 4px; }
 .posts .posts-note { color: var(--text-muted); font-size: 13px; margin: 0 0 14px; }
@@ -326,7 +347,7 @@ tbody tr:hover { background: var(--wash); }
 }
 .move { font-variant-numeric: tabular-nums; font-weight: 600; }
 .move.neg { color: var(--critical); }
-.move.pos { color: var(--good); }
+.move.pos { color: var(--rally); }
 
 /* ----------------------------------------------------------------- foot */
 .page-foot {

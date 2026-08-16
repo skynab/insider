@@ -1,4 +1,4 @@
-/* Insider — interactive drawdown explorer.
+/* Insider — interactive market-move explorer.
    Data is supplied by data/insider-data.js as a plain global, and D3 is
    vendored locally, so the page makes no network requests at all. It runs
    identically from GitHub Pages, from any static server, or by opening
@@ -13,7 +13,8 @@
     meta: null,
     indexKey: "spx",
     minDepth: 2,
-    kind: "all", // all | drawdown | shock
+    direction: "all", // all | down | up
+    span: "all",      // all | multi | single
     selectedId: null,
     domain: null, // [Date, Date] current zoom, null = full
   };
@@ -65,9 +66,9 @@
     tooltip = d3.select("body").append("div").attr("class", "tooltip");
 
     state.market = data.market;
-    state.dipsByIndex = data.dips.indices;
+    state.dipsByIndex = data.events.indices;
     state.meta = data.meta;
-    state.indexKey = data.dips.primary || "spx";
+    state.indexKey = data.events.primary || "spx";
 
     try {
       init();
@@ -88,18 +89,44 @@
     return state.market[state.indexKey].series;
   }
 
-  /** Events for the active index, filtered by size and type. */
+  /** Events for the active index, filtered by size, direction and span. */
   function activeDips() {
     return state.dipsByIndex[state.indexKey].filter(
       (d) =>
-        d.depth_pct >= state.minDepth &&
-        (state.kind === "all" || d.kind === state.kind)
+        d.move_pct >= state.minDepth &&
+        (state.direction === "all" || d.direction === state.direction) &&
+        (state.span === "all" || spanOf(d) === state.span)
     );
   }
 
-  function drawdowns() {
-    return activeDips().filter((d) => d.kind === "drawdown");
+  function spanOf(d) {
+    return d.trading_days === 1 ? "single" : "multi";
   }
+
+  /** Only multi-session legs get a shaded band. */
+  function legs() {
+    return activeDips().filter((d) => spanOf(d) === "multi");
+  }
+
+  const isUp = (d) => d.direction === "up";
+
+  /** Signed percentage string, e.g. "+9.52%" / "−5.97%". */
+  function signed(pct, digits) {
+    const n = Math.abs(pct).toFixed(digits === undefined ? 2 : digits);
+    return (pct < 0 ? "−" : "+") + n + "%";
+  }
+
+  /** A move's signed size, from its absolute magnitude plus direction. */
+  function movePct(d) {
+    return isUp(d) ? d.move_pct : -d.move_pct;
+  }
+
+  const KIND_LABEL = {
+    drawdown: "Decline",
+    rally: "Rally",
+    shock: "One-day drop",
+    surge: "One-day jump",
+  };
 
   function selectedDip() {
     return activeDips().find((d) => d.id === state.selectedId) || null;
@@ -152,9 +179,17 @@
       renderAll();
     });
 
-    d3.selectAll("#kind-toggle button").on("click", function () {
-      state.kind = this.dataset.kind;
-      d3.selectAll("#kind-toggle button").classed("is-active", false);
+    d3.selectAll("#dir-toggle button").on("click", function () {
+      state.direction = this.dataset.dir;
+      d3.selectAll("#dir-toggle button").classed("is-active", false);
+      d3.select(this).classed("is-active", true);
+      if (!selectedDip()) state.selectedId = null;
+      renderAll();
+    });
+
+    d3.selectAll("#span-toggle button").on("click", function () {
+      state.span = this.dataset.span;
+      d3.selectAll("#span-toggle button").classed("is-active", false);
       d3.select(this).classed("is-active", true);
       if (!selectedDip()) state.selectedId = null;
       renderAll();
@@ -185,12 +220,12 @@
 
   function renderHeadStats() {
     const all = state.dipsByIndex[state.indexKey];
-    const deepest = d3.max(all.filter((d) => d.kind === "drawdown"), (d) => d.depth_pct);
-    const worstDay = d3.min(all, (d) => d.worst_day_pct);
+    const worstDay = d3.min(all, (d) => d.key_day_pct);
+    const bestDay = d3.max(all, (d) => d.key_day_pct);
     const stats = [
-      { k: "Events tracked", v: all.length },
-      { k: "Deepest drawdown", v: "−" + deepest.toFixed(1) + "%" },
-      { k: "Worst session", v: "−" + Math.abs(worstDay).toFixed(1) + "%" },
+      { k: "Moves tracked", v: all.length },
+      { k: "Worst session", v: signed(worstDay, 1), cls: "neg" },
+      { k: "Best session", v: signed(bestDay, 1), cls: "pos" },
       { k: "Posts scanned", v: state.meta.post_count.toLocaleString() },
     ];
     const sel = d3
@@ -199,7 +234,12 @@
       .data(stats)
       .join("div");
     sel.selectAll("dt").data((d) => [d]).join("dt").text((d) => d.k);
-    sel.selectAll("dd").data((d) => [d]).join("dd").text((d) => d.v);
+    sel
+      .selectAll("dd")
+      .data((d) => [d])
+      .join("dd")
+      .attr("class", (d) => d.cls || null)
+      .text((d) => d.v);
   }
 
   function renderAll() {
@@ -261,16 +301,16 @@
 
     const plot = g.append("g").attr("clip-path", "url(#focus-clip)");
 
-    // Drawdown bands, drawn under the line.
+    // Multi-session legs, drawn as bands under the line.
     const dips = activeDips();
     plot
       .append("g")
       .selectAll("rect")
-      .data(drawdowns())
+      .data(legs())
       .join("rect")
-      .attr("class", "dip-band")
-      .attr("x", (d) => x(parseDay(d.peak_date)))
-      .attr("width", (d) => Math.max(1.5, x(parseDay(d.trough_date)) - x(parseDay(d.peak_date))))
+      .attr("class", (d) => "dip-band band-" + d.direction)
+      .attr("x", (d) => x(parseDay(d.start_date)))
+      .attr("width", (d) => Math.max(1.5, x(parseDay(d.end_date)) - x(parseDay(d.start_date))))
       .attr("y", 0)
       .attr("height", ih)
       .on("mousemove", (event, d) => showTip(dipTip(d), event))
@@ -328,16 +368,17 @@
         hideTip();
       });
 
-    // Event markers: circles for drawdown troughs, diamonds for single-session
-    // shocks, so the two classes stay distinguishable without relying on color.
+    // Event markers. Shape carries direction — triangles point up for rallies
+    // and down for declines — so the up/down distinction never rests on color
+    // alone (red/green is exactly the pair colorblind readers lose).
     // Added last so their hover wins over the crosshair capture area.
-    const symbol = d3.symbol();
+    const symbol = d3.symbol().type(d3.symbolTriangle);
     const markers = plot
       .append("g")
       .selectAll("g")
       .data(dips)
       .join("g")
-      .attr("transform", (d) => `translate(${x(parseDay(d.trough_date))},${y(d.trough_close)})`)
+      .attr("transform", (d) => `translate(${x(parseDay(d.end_date))},${y(d.end_close)})`)
       .on("mousemove", (event, d) => showTip(dipTip(d), event))
       .on("mouseleave", hideTip)
       .on("click", (event, d) => {
@@ -349,18 +390,18 @@
     markers
       .append("circle")
       .attr("class", "marker-hit")
-      .attr("r", (d) => Math.max(13, markerRadius(d.depth_pct) + 7));
+      .attr("r", (d) => Math.max(13, markerRadius(d.move_pct) + 7));
 
     markers
       .append("path")
       .attr("class", (d) =>
-        "trough-dot marker-" + d.kind + (d.id === state.selectedId ? " is-selected" : "")
+        "trough-dot marker-" + d.direction +
+        (spanOf(d) === "single" ? " marker-single" : "") +
+        (d.id === state.selectedId ? " is-selected" : "")
       )
-      .attr("d", (d) =>
-        symbol
-          .type(d.kind === "shock" ? d3.symbolDiamond : d3.symbolCircle)
-          .size(markerArea(d.depth_pct))()
-      );
+      // Triangles are drawn pointing up; flip them for declines.
+      .attr("transform", (d) => (isUp(d) ? null : "rotate(180)"))
+      .attr("d", (d) => symbol.size(markerArea(d.move_pct))());
 
     g.append("g")
       .attr("class", "axis")
@@ -393,13 +434,13 @@
 
   function dipTip(d) {
     const span =
-      d.kind === "shock"
-        ? fmtDay(parseDay(d.trough_date)) + " · single session"
-        : `${fmtShortDay(parseDay(d.peak_date))} → ${fmtDay(parseDay(d.trough_date))} · ${d.trading_days} sessions`;
+      spanOf(d) === "single"
+        ? fmtDay(parseDay(d.end_date)) + " · single session"
+        : `${fmtShortDay(parseDay(d.start_date))} → ${fmtDay(parseDay(d.end_date))} · ${d.trading_days} sessions`;
 
     let html =
-      `<div class="tt-date">${span}</div>` +
-      `<div class="tt-value move neg">−${d.depth_pct.toFixed(2)}%</div>`;
+      `<div class="tt-date">${KIND_LABEL[d.kind]} · ${span}</div>` +
+      `<div class="tt-value move ${isUp(d) ? "pos" : "neg"}">${signed(movePct(d))}</div>`;
 
     const top = d.posts[0];
     if (top) {
@@ -408,9 +449,9 @@
       });
       const rel =
         top.phase === "before"
-          ? lead(top.lead_hours) + " before the worst session"
+          ? lead(top.lead_hours) + " before the key session"
           : top.phase === "during"
-          ? "during the worst session"
+          ? "during the key session"
           : "after that session closed";
       html +=
         `<blockquote class="tt-quote">${esc(truncate(top.text, 180))}</blockquote>` +
@@ -449,12 +490,12 @@
 
     g.append("g")
       .selectAll("rect")
-      .data(drawdowns())
+      .data(legs())
       .join("rect")
-      .attr("class", "dip-band")
+      .attr("class", (d) => "dip-band band-" + d.direction)
       .style("pointer-events", "none")
-      .attr("x", (d) => x(parseDay(d.peak_date)))
-      .attr("width", (d) => Math.max(1, x(parseDay(d.trough_date)) - x(parseDay(d.peak_date))))
+      .attr("x", (d) => x(parseDay(d.start_date)))
+      .attr("width", (d) => Math.max(1, x(parseDay(d.end_date)) - x(parseDay(d.start_date))))
       .attr("y", 0)
       .attr("height", ih);
 
@@ -494,7 +535,7 @@
   }
 
   function renderDipList() {
-    const dips = activeDips().slice().sort((a, b) => b.depth_pct - a.depth_pct);
+    const dips = activeDips().slice().sort((a, b) => b.move_pct - a.move_pct);
     d3.select("#dip-count").text(`(${dips.length})`);
 
     const items = d3
@@ -510,25 +551,26 @@
     left
       .append("div")
       .attr("class", "li-date")
-      .text((d) => fmtDay(parseDay(d.trough_date)));
+      .text((d) => fmtDay(parseDay(d.end_date)));
     left
       .append("div")
       .attr("class", "li-sub")
       .text(
         (d) =>
-          (d.kind === "shock" ? "Single session" : `${d.trading_days} sessions`) +
+          KIND_LABEL[d.kind] +
+          (spanOf(d) === "single" ? "" : ` · ${d.trading_days} sessions`) +
           ` · ${d.posts.length} post${d.posts.length === 1 ? "" : "s"}`
       );
     items
       .append("div")
-      .attr("class", "li-depth")
-      .text((d) => "−" + d.depth_pct.toFixed(1) + "%");
+      .attr("class", (d) => "li-depth " + (isUp(d) ? "pos" : "neg"))
+      .text((d) => signed(movePct(d), 1));
   }
 
   // -------------------------------------------------------------- table
 
   function renderTable() {
-    const dips = activeDips().slice().sort((a, b) => b.depth_pct - a.depth_pct);
+    const dips = activeDips().slice().sort((a, b) => b.move_pct - a.move_pct);
     const rows = d3
       .select("#dip-table tbody")
       .selectAll("tr")
@@ -540,11 +582,11 @@
     const cell = (fn, cls) =>
       rows.append("td").attr("class", cls || null).text(fn);
 
-    cell((d) => (d.kind === "shock" ? "Shock" : "Drawdown"));
-    cell((d) => fmtDay(parseDay(d.peak_date)));
-    cell((d) => fmtDay(parseDay(d.trough_date)));
-    cell((d) => "−" + d.depth_pct.toFixed(2) + "%", "num");
-    cell((d) => "−" + Math.abs(d.worst_day_pct).toFixed(2) + "%", "num");
+    cell((d) => KIND_LABEL[d.kind]);
+    cell((d) => fmtDay(parseDay(d.start_date)));
+    cell((d) => fmtDay(parseDay(d.end_date)));
+    cell((d) => signed(movePct(d)), "num");
+    cell((d) => signed(d.key_day_pct), "num");
     cell((d) => d.trading_days, "num");
     cell((d) => d.posts.length, "num");
     cell((d) => (d.posts[0] ? truncate(d.posts[0].text, 90) : "—"));
@@ -572,46 +614,49 @@
       host
         .append("p")
         .attr("class", "empty")
-        .text("Select a dip on the chart or in the list to see the posts that landed during it.");
+        .text("Select an event on the chart or in the list to see the posts that landed during it.");
       return;
     }
 
+    const up = isUp(dip);
+    const single = spanOf(dip) === "single";
+    const sign = up ? "pos" : "neg";
+
     host
       .append("h2")
-      .text(`−${dip.depth_pct.toFixed(2)}% into ${fmtDay(parseDay(dip.trough_date))}`);
+      .attr("class", "detail-head " + sign)
+      .text(
+        `${signed(movePct(dip))} ${single ? "on" : "into"} ${fmtDay(parseDay(dip.end_date))}`
+      );
 
     const label = state.market[state.indexKey].label;
     host
       .append("p")
       .attr("class", "sub")
       .text(
-        dip.kind === "shock"
-          ? `${label} closed at ${fmtNum(dip.trough_close)}, down from ` +
-            `${fmtNum(dip.peak_close)} the session before — its ` +
-            `#${dip.rank} worst single session since 2024.`
-          : `${label} fell from ${fmtNum(dip.peak_close)} on ` +
-            `${fmtDay(parseDay(dip.peak_date))} to ${fmtNum(dip.trough_close)} over ` +
-            `${dip.trading_days} sessions` +
-            (dip.recovery_date
-              ? `, and reclaimed the old high on ${fmtDay(parseDay(dip.recovery_date))} ` +
-                `(${dip.recovery_days} sessions later).`
-              : ", and has not yet reclaimed that high.")
+        single
+          ? `${label} closed at ${fmtNum(dip.end_close)}, ${up ? "up" : "down"} from ` +
+            `${fmtNum(dip.start_close)} the session before — its ` +
+            `#${dip.rank} biggest single-session ${up ? "gain" : "drop"} since 2024.`
+          : `${label} ${up ? "rose" : "fell"} from ${fmtNum(dip.start_close)} on ` +
+            `${fmtDay(parseDay(dip.start_date))} to ${fmtNum(dip.end_close)} on ` +
+            `${fmtDay(parseDay(dip.end_date))} — ${dip.trading_days} sessions, ` +
+            `the #${dip.rank} largest ${up ? "advance" : "decline"} since 2024.`
       );
 
-    const stats =
-      dip.kind === "shock"
-        ? [
-            { k: "One-day move", v: "−" + Math.abs(dip.worst_day_pct).toFixed(2) + "%", cls: "neg" },
-            { k: "Rank by size", v: "#" + dip.rank },
-            { k: "Posts in window", v: dip.posts_considered },
-          ]
-        : [
-            { k: "Depth", v: "−" + dip.depth_pct.toFixed(2) + "%", cls: "neg" },
-            { k: "Worst session", v: "−" + Math.abs(dip.worst_day_pct).toFixed(2) + "%", cls: "neg" },
-            { k: "Worst day", v: fmtShortDay(parseDay(dip.worst_day)) },
-            { k: "Rank by depth", v: "#" + dip.rank },
-            { k: "Posts in window", v: dip.posts_considered },
-          ];
+    const stats = single
+      ? [
+          { k: "One-day move", v: signed(dip.key_day_pct), cls: sign },
+          { k: "Rank by size", v: "#" + dip.rank },
+          { k: "Posts in window", v: dip.posts_considered },
+        ]
+      : [
+          { k: "Total move", v: signed(movePct(dip)), cls: sign },
+          { k: "Key session", v: signed(dip.key_day_pct), cls: sign },
+          { k: "Key day", v: fmtShortDay(parseDay(dip.key_day)) },
+          { k: "Rank by size", v: "#" + dip.rank },
+          { k: "Posts in window", v: dip.posts_considered },
+        ];
     const row = host.append("div").attr("class", "stat-row");
     const stat = row.selectAll("div").data(stats).join("div").attr("class", "stat");
     stat.append("span").attr("class", (d) => "v " + (d.cls || "")).text((d) => d.v);
@@ -625,10 +670,10 @@
       .text(
         dip.posts.length
           ? `Top ${dip.posts.length} of ${dip.posts_considered} market-relevant posts published ` +
-            (dip.kind === "shock"
-              ? `between the previous close and this one — the only posts that could have moved it. `
-              : `between ${fmtShortDay(parseDay(dip.peak_date))} and ${fmtShortDay(parseDay(dip.trough_date))}. `) +
-            "Ranked by subject relevance, proximity to the worst session, and engagement."
+            (single
+              ? "between the previous close and this one — the only posts that could have moved it. "
+              : `between ${fmtShortDay(parseDay(dip.start_date))} and ${fmtShortDay(parseDay(dip.end_date))}. `) +
+            "Ranked by subject relevance, proximity to the key session, and engagement."
           : "No market-relevant posts were published during this window."
       );
 
@@ -642,9 +687,9 @@
         const when = new Date(p.ts);
         const rel =
           p.phase === "before"
-            ? `${lead(p.lead_hours)} before the worst session opened`
+            ? `${lead(p.lead_hours)} before the key session opened`
             : p.phase === "during"
-            ? "during the worst session"
+            ? "during the key session"
             : `${lead(Math.abs(p.lead_hours))} after that session closed — post-hoc`;
         return `${when.toLocaleString(undefined, {
           month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",

@@ -1,13 +1,13 @@
 {
-  "built_at": "2026-08-16T00:26:41.976304Z",
+  "built_at": "2026-08-16T15:25:40.889839Z",
   "start": "2024-01-01",
   "min_depth_pct": 2.0,
-  "dip_count": {
-    "spx": 50,
-    "ndx": 80,
-    "dji": 40
+  "event_count": {
+    "spx": 112,
+    "ndx": 198,
+    "dji": 90
   },
-  "post_count": 15921,
+  "post_count": 15935,
   "last_session": "2026-08-14",
   "sources": {
     "prices": {

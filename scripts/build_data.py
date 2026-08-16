@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build the static datasets for the Insider dip explorer.
+Build the static datasets for the Insider market-move explorer.
 
 Fetches:
   * Daily index prices from Yahoo Finance (no API key required)
@@ -9,7 +9,7 @@ Fetches:
 
 Emits into data/:
   market.json  - daily OHLC-ish closes for each tracked index
-  dips.json    - detected drawdown episodes, each with scored candidate posts
+  events.json  - detected market moves, each with scored candidate posts
   meta.json    - build provenance
 
 Everything the web app needs is committed to the repo. No server, no database.
@@ -60,12 +60,19 @@ UA_BROWSER = (
 )
 
 # Terms that plausibly move equity markets, weighted by how directly they do.
-# Matched case-insensitively as whole words / phrases.
+# Matched case-insensitively as whole words / phrases. The list is deliberately
+# direction-neutral: the same subjects (tariffs, the Fed, China) drive both
+# selloffs and rallies, and the market's own move supplies the sign. The 3.0
+# tier also carries explicit market-action language — "time to buy", "pause",
+# "record high" — which is how upside catalysts usually read.
 KEYWORDS = {
     3.0: [
         "tariff", "tariffs", "trade war", "reciprocal", "powell",
         "federal reserve", "the fed", "interest rate", "interest rates",
         "rate cut", "stock market", "wall street",
+        "time to buy", "great time to buy", "buy", "djt",
+        "record high", "record highs", "all-time high", "pause", "paused",
+        "boom", "booming", "greatest economy", "invest", "investment",
     ],
     2.0: [
         "china", "chinese", "trade deal", "trade agreement", "sanction",
@@ -158,103 +165,119 @@ def fetch_yahoo(symbol: str, start: datetime, end: datetime):
     return [deduped[d] for d in sorted(deduped)]
 
 
-# ------------------------------------------------------------ dip detection
+# ---------------------------------------------------------- event detection
 
 
-def find_dips(series, min_depth_pct: float):
+def find_swings(series, min_move_pct: float):
     """
-    Identify non-overlapping peak-to-trough drawdown episodes.
+    Segment the series into alternating up and down legs (a zigzag).
 
-    A running high is tracked; whenever price falls at least `min_depth_pct`
-    below that high before reclaiming it, the stretch is recorded as an episode
-    with its peak, trough and (if it happened) recovery date.
+    A leg runs from one turning point to the next: it extends while price keeps
+    making new extremes, and closes once price reverses by at least
+    `min_move_pct` off that extreme. The reversal point becomes the next leg's
+    start, so the legs tile the whole period and up and down moves are found on
+    identical terms.
+
+    A one-sided definition does not work here. Tracking drawdowns against a
+    running high is standard, but its mirror — advances off a running low —
+    degenerates in a rising market, where the index almost never sets a new low
+    and the entire period collapses into a single enormous "rally".
     """
-    dips = []
-    peak_i = 0
-    trough_i = 0
+    legs = []
+    pivot = 0      # where the current leg started
+    ext = 0        # the extreme reached so far in the current leg
+    direction = None
 
-    def close_episode(recovery_i):
-        depth = (series[peak_i]["c"] - series[trough_i]["c"]) / series[peak_i]["c"] * 100
-        if depth < min_depth_pct:
-            return
-        window = series[peak_i : trough_i + 1]
-        worst_i, worst_pct = peak_i, 0.0
-        for i in range(max(peak_i, 1), trough_i + 1):
+    def make_leg(a, b, way):
+        move = (series[b]["c"] - series[a]["c"]) / series[a]["c"] * 100
+        up = way == "up"
+        key_i, key_pct = a, 0.0
+        for i in range(a + 1, b + 1):
             chg = (series[i]["c"] - series[i - 1]["c"]) / series[i - 1]["c"] * 100
-            if chg < worst_pct:
-                worst_pct, worst_i = chg, i
-        dips.append(
-            {
-                "id": "dip-" + series[trough_i]["d"],
-                "kind": "drawdown",
-                "peak_date": series[peak_i]["d"],
-                "peak_close": series[peak_i]["c"],
-                "trough_date": series[trough_i]["d"],
-                "trough_close": series[trough_i]["c"],
-                "depth_pct": round(depth, 2),
-                "trading_days": trough_i - peak_i,
-                "worst_day": series[worst_i]["d"],
-                "worst_day_pct": round(worst_pct, 2),
-                "recovery_date": series[recovery_i]["d"] if recovery_i is not None else None,
-                "recovery_days": (recovery_i - trough_i) if recovery_i is not None else None,
-                "sessions": [
-                    {"d": r["d"], "c": r["c"]} for r in window
-                ],
-            }
-        )
+            if (chg > key_pct) if up else (chg < key_pct):
+                key_pct, key_i = chg, i
+        kind = "rally" if up else "drawdown"
+        return {
+            "id": f"{kind}-{series[b]['d']}",
+            "kind": kind,
+            "direction": way,
+            "start_date": series[a]["d"],
+            "start_close": series[a]["c"],
+            "end_date": series[b]["d"],
+            "end_close": series[b]["c"],
+            "move_pct": round(abs(move), 2),
+            "trading_days": b - a,
+            "key_day": series[key_i]["d"],
+            "key_day_pct": round(key_pct, 2),
+        }
 
     for i in range(1, len(series)):
-        if series[i]["c"] >= series[peak_i]["c"]:
-            close_episode(i)
-            peak_i = trough_i = i
-        elif series[i]["c"] < series[trough_i]["c"]:
-            trough_i = i
-    if trough_i > peak_i:
-        close_episode(None)
+        c = series[i]["c"]
+        ext_c = series[ext]["c"]
+        if direction == "up":
+            if c >= ext_c:
+                ext = i
+            elif (ext_c - c) / ext_c * 100 >= min_move_pct:
+                legs.append(make_leg(pivot, ext, "up"))
+                pivot, ext, direction = ext, i, "down"
+        elif direction == "down":
+            if c <= ext_c:
+                ext = i
+            elif (c - ext_c) / ext_c * 100 >= min_move_pct:
+                legs.append(make_leg(pivot, ext, "down"))
+                pivot, ext, direction = ext, i, "up"
+        else:
+            # Opening leg: wait for the first move that clears the threshold.
+            move = (c - series[pivot]["c"]) / series[pivot]["c"] * 100
+            if abs(move) >= min_move_pct:
+                direction = "up" if move > 0 else "down"
+                ext = i
 
-    return rank_and_sort(dips)
+    # The final, still-running leg.
+    if direction and ext > pivot:
+        legs.append(make_leg(pivot, ext, direction))
+
+    return rank_and_sort(legs)
 
 
-def find_shocks(series, min_drop_pct: float):
+def find_single_sessions(series, min_move_pct: float, direction: str):
     """
-    Single-session shocks: one day, a big drop. These are the cases where a post
-    and a move can actually be lined up, and they are often buried inside a long
-    drawdown episode, so they are tracked as their own event class.
+    One-day moves of at least `min_move_pct`. These are where a post and a move
+    can actually be lined up — the scoring window is just the previous close to
+    this one — and they are often buried inside a longer episode, so they are
+    tracked as their own class.
     """
-    shocks = []
+    down = direction == "down"
+    kind = "shock" if down else "surge"
+    events = []
     for i in range(1, len(series)):
         chg = (series[i]["c"] - series[i - 1]["c"]) / series[i - 1]["c"] * 100
-        if chg > -min_drop_pct:
+        if (chg > -min_move_pct) if down else (chg < min_move_pct):
             continue
-        shocks.append(
+        events.append(
             {
-                "id": "shock-" + series[i]["d"],
-                "kind": "shock",
-                "peak_date": series[i - 1]["d"],
-                "peak_close": series[i - 1]["c"],
-                "trough_date": series[i]["d"],
-                "trough_close": series[i]["c"],
-                "depth_pct": round(-chg, 2),
+                "id": f"{kind}-{series[i]['d']}",
+                "kind": kind,
+                "direction": direction,
+                "start_date": series[i - 1]["d"],
+                "start_close": series[i - 1]["c"],
+                "end_date": series[i]["d"],
+                "end_close": series[i]["c"],
+                "move_pct": round(abs(chg), 2),
                 "trading_days": 1,
-                "worst_day": series[i]["d"],
-                "worst_day_pct": round(chg, 2),
-                "recovery_date": None,
-                "recovery_days": None,
-                "sessions": [
-                    {"d": series[j]["d"], "c": series[j]["c"]}
-                    for j in range(i - 1, i + 1)
-                ],
+                "key_day": series[i]["d"],
+                "key_day_pct": round(chg, 2),
             }
         )
-    return rank_and_sort(shocks)
+    return rank_and_sort(events)
 
 
 def rank_and_sort(events):
-    """Rank by depth (deepest = #1), then return in chronological order."""
-    events.sort(key=lambda e: e["depth_pct"], reverse=True)
+    """Rank by size (largest = #1), then return in chronological order."""
+    events.sort(key=lambda e: e["move_pct"], reverse=True)
     for rank, event in enumerate(events, 1):
         event["rank"] = rank
-    events.sort(key=lambda e: e["trough_date"])
+    events.sort(key=lambda e: e["end_date"])
     return events
 
 
@@ -264,9 +287,28 @@ TAG_RE = re.compile(r"<[^>]+>")
 WS_RE = re.compile(r"\s+")
 
 
+def fix_mojibake(text: str) -> str:
+    """
+    Repair upstream double-encoding.
+
+    Parts of the archive carry UTF-8 bytes that were decoded as Latin-1, so
+    curly quotes and em dashes arrive as "â€œ" / "â€”". Round-tripping through
+    Latin-1 restores them. Guarded and reversible: text without the telltale
+    markers is returned untouched, and anything that fails to round-trip (real
+    Latin-1 characters, for instance) falls back to the original.
+    """
+    if not any(marker in text for marker in ("Ã", "Â", "â\x80", "â€")):
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def clean(content: str) -> str:
     text = TAG_RE.sub(" ", content or "")
     text = html.unescape(text)
+    text = fix_mojibake(text)
     return WS_RE.sub(" ", text).strip()
 
 
@@ -340,20 +382,20 @@ def score_posts_for_event(event, posts, index_by_day, session_days, limit=6):
     """
     Score posts inside an event's window.
 
-    For a drawdown the window spans the run-up to the peak through the trough's
-    close; for a single-session shock it is the tight span from the previous
-    close to that session's close — the only posts that could have moved it.
-    Scores decay with distance from the worst session's opening bell.
+    For a multi-session episode the window spans the run-up to the start through
+    the end session's close; for a single-session move it is the tight span from
+    the previous close to that session's close — the only posts that could have
+    moved it. Scores decay with distance from the key session's opening bell.
     """
-    worst_open, worst_close = session_bounds(event["worst_day"])
+    key_open, key_close = session_bounds(event["key_day"])
 
-    if event["kind"] == "shock":
-        window_start = session_bounds(event["peak_date"])[1]  # previous close
-        window_end = worst_close
+    if event["trading_days"] == 1:
+        window_start = session_bounds(event["start_date"])[1]  # previous close
+        window_end = key_close
     else:
-        window_start = datetime.strptime(event["peak_date"], "%Y-%m-%d").replace(tzinfo=ET)
+        window_start = datetime.strptime(event["start_date"], "%Y-%m-%d").replace(tzinfo=ET)
         window_start -= timedelta(days=2)
-        window_end = session_bounds(event["trough_date"])[1]
+        window_end = session_bounds(event["end_date"])[1]
 
     scored = []
     for post in posts:
@@ -364,11 +406,11 @@ def score_posts_for_event(event, posts, index_by_day, session_days, limit=6):
             continue
         relevance += shout_bonus(post["text"])
 
-        # Proximity to the worst session's open, and which side of it the post fell.
-        lead_hours = (worst_open - post["ts"]).total_seconds() / 3600.0
+        # Proximity to the key session's open, and which side of it the post fell.
+        lead_hours = (key_open - post["ts"]).total_seconds() / 3600.0
         if lead_hours > 0:
             phase = "before"
-        elif post["ts"] <= worst_close:
+        elif post["ts"] <= key_close:
             phase = "during"
         else:
             phase = "after"
@@ -413,9 +455,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2024-01-01")
     ap.add_argument("--min-depth", type=float, default=2.0,
-                    help="minimum peak-to-trough %% decline to count as a drawdown")
+                    help="minimum multi-session %% move to count (either direction)")
     ap.add_argument("--min-shock", type=float, default=1.5,
-                    help="minimum single-session %% drop to count as a shock")
+                    help="minimum single-session %% move to count (either direction)")
     args = ap.parse_args()
 
     start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -446,15 +488,26 @@ def main():
     print(f"  {len(posts)} posts since {args.start}", file=sys.stderr)
 
     # Events are detected per index so the app can switch indices without a rebuild.
-    dips_by_index = {}
+    events_by_index = {}
     for key, entry in market.items():
         series = entry["series"]
         index_by_day = {row["d"]: row for row in series}
         session_days = [row["d"] for row in series]
 
-        drawdowns = find_dips(series, args.min_depth)
-        shocks = find_shocks(series, args.min_shock)
-        events = drawdowns + shocks
+        # A swing leg can be a single session, which would duplicate the
+        # shock/surge for that same day — and the single-session class is the
+        # better record of it, since its scoring window is far tighter. Drop
+        # those legs and re-rank so "#1 biggest" means what it says.
+        swings = [e for e in find_swings(series, args.min_depth) if e["trading_days"] > 1]
+        # Ranked within each class, so "#1" reads as "biggest decline" /
+        # "biggest one-day gain" rather than a position in a mixed pile.
+        groups = {
+            "drawdown": rank_and_sort([e for e in swings if e["direction"] == "down"]),
+            "rally": rank_and_sort([e for e in swings if e["direction"] == "up"]),
+            "shock": find_single_sessions(series, args.min_shock, "down"),
+            "surge": find_single_sessions(series, args.min_shock, "up"),
+        }
+        events = [e for group in groups.values() for e in group]
         for event in events:
             matches, considered = score_posts_for_event(
                 event, posts, index_by_day, session_days
@@ -462,24 +515,27 @@ def main():
             event["posts"] = matches
             event["posts_considered"] = considered
 
-        events.sort(key=lambda e: e["trough_date"])
-        dips_by_index[key] = events
-        print(f"  {entry['label']}: {len(drawdowns)} drawdowns ≥{args.min_depth}%, "
-              f"{len(shocks)} single-session shocks ≥{args.min_shock}%", file=sys.stderr)
+        events.sort(key=lambda e: e["end_date"])
+        events_by_index[key] = events
+        print(
+            f"  {entry['label']}: "
+            + ", ".join(f"{len(v)} {k}s" for k, v in groups.items()),
+            file=sys.stderr,
+        )
 
     primary = market[PRIMARY]["series"]
 
-    dips = {
+    events_out = {
         "primary": PRIMARY,
         "min_depth_pct": args.min_depth,
         "min_shock_pct": args.min_shock,
-        "indices": dips_by_index,
+        "indices": events_by_index,
     }
     meta = {
         "built_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "start": args.start,
         "min_depth_pct": args.min_depth,
-        "dip_count": {k: len(v) for k, v in dips_by_index.items()},
+        "event_count": {k: len(v) for k, v in events_by_index.items()},
         "post_count": len(posts),
         "last_session": primary[-1]["d"],
         "sources": {
@@ -494,15 +550,15 @@ def main():
     (DATA / "insider-data.js").write_text(
         "/* Generated by scripts/build_data.py — do not edit by hand. */\n"
         "window.INSIDER_DATA = "
-        + json.dumps({"market": market, "dips": dips, "meta": meta},
+        + json.dumps({"market": market, "events": events_out, "meta": meta},
                      separators=(",", ":"))
         + ";\n"
     )
     (DATA / "market.json").write_text(json.dumps(market, separators=(",", ":")))
-    (DATA / "dips.json").write_text(json.dumps(dips, separators=(",", ":")))
+    (DATA / "events.json").write_text(json.dumps(events_out, separators=(",", ":")))
     (DATA / "meta.json").write_text(json.dumps(meta, indent=2))
 
-    for name in ("insider-data.js", "market.json", "dips.json", "meta.json"):
+    for name in ("insider-data.js", "market.json", "events.json", "meta.json"):
         size = (DATA / name).stat().st_size
         print(f"wrote data/{name}  ({size/1024:.0f} KB)", file=sys.stderr)
 

@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Insider — Market Dips &amp; Truth Social</title>
-<meta name="description" content="Interactive chart of US index drawdowns since 2024, paired with Donald Trump's Truth Social posts from the same window.">
+<title>Insider — Market Moves &amp; Truth Social</title>
+<meta name="description" content="Interactive chart of US index moves up and down since 2024, paired with Donald Trump's Truth Social posts from the same window.">
 <link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📉</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📊</text></svg>">
 </head>
 <body>
 
 <header class="page-head">
   <div class="head-main">
-    <h1>Market dips &amp; Truth Social</h1>
+    <h1>Market moves &amp; Truth Social</h1>
     <p class="lede">
-      Every peak-to-trough drawdown in the US indices since January 2024, paired with
-      the posts Donald Trump published during the slide. Click a dip to inspect it.
+      Every significant move in the US indices since January 2024 — down <em>and</em> up —
+      paired with the posts Donald Trump published while it happened. Click any event
+      to inspect it.
     </p>
   </div>
   <dl class="head-stats" id="head-stats"></dl>
@@ -23,9 +24,10 @@
 
 <p class="caveat" role="note">
   <strong>These pairings are timing, not causation.</strong> Posts are surfaced because they
-  landed in the window while the index was falling and mention market-relevant subjects.
-  A high match score means "worth a look," never "this caused the drop." Markets move on
-  many things at once; judge each pairing yourself.
+  landed in the window while the index was moving and mention market-relevant subjects.
+  A high match score means "worth a look," never "this caused the move." This cuts both
+  ways: a post before a rally is no more proof of cause than one before a selloff.
+  Markets move on many things at once; judge each pairing yourself.
 </p>
 
 <section class="controls" aria-label="Chart controls">
@@ -38,11 +40,19 @@
     <input type="range" id="depth-range" min="1.5" max="12" step="0.5" value="2">
   </div>
   <div class="control">
-    <label for="kind-toggle">Event type</label>
-    <div class="segmented" id="kind-toggle" role="group">
-      <button type="button" data-kind="all" class="is-active">Both</button>
-      <button type="button" data-kind="drawdown">Drawdowns</button>
-      <button type="button" data-kind="shock">Shocks</button>
+    <label for="dir-toggle">Direction</label>
+    <div class="segmented" id="dir-toggle" role="group">
+      <button type="button" data-dir="all" class="is-active">Both</button>
+      <button type="button" data-dir="down">Declines</button>
+      <button type="button" data-dir="up">Rallies</button>
+    </div>
+  </div>
+  <div class="control">
+    <label for="span-toggle">Span</label>
+    <div class="segmented" id="span-toggle" role="group">
+      <button type="button" data-span="all" class="is-active">Both</button>
+      <button type="button" data-span="multi">Multi-session</button>
+      <button type="button" data-span="single">Single day</button>
     </div>
   </div>
   <div class="control">
@@ -59,26 +69,27 @@
   <figure>
     <figcaption id="chart-caption">
       <span class="fig-title" id="fig-title">S&amp;P 500 daily close</span>
-      <span class="fig-note">Shaded bands are drawdown episodes · drag the strip below to zoom · click any marker</span>
+      <span class="fig-note">Shaded bands are multi-session legs · drag the strip below to zoom · click any marker</span>
     </figcaption>
     <div id="focus-chart" class="viz-root"></div>
     <div id="context-chart" class="viz-root"></div>
   </figure>
   <div class="legend" aria-hidden="false">
     <span class="legend-item"><i class="swatch swatch-line"></i>Index close</span>
-    <span class="legend-item"><i class="swatch swatch-dip"></i>Drawdown episode</span>
-    <span class="legend-item"><i class="swatch swatch-trough"></i>Drawdown trough</span>
-    <span class="legend-item"><i class="swatch swatch-shock"></i>Single-session shock</span>
+    <span class="legend-item"><i class="swatch swatch-down-band"></i>Decline leg</span>
+    <span class="legend-item"><i class="swatch swatch-up-band"></i>Rally leg</span>
+    <span class="legend-item"><i class="swatch swatch-down"></i>Decline (▼ points down)</span>
+    <span class="legend-item"><i class="swatch swatch-up"></i>Rally (▲ points up)</span>
   </div>
 </section>
 
 <section class="table-card" id="table-view" hidden>
   <table id="dip-table">
-    <caption>All detected events, largest first — click a row to inspect it</caption>
+    <caption>All detected moves, largest first — click a row to inspect it</caption>
     <thead>
       <tr>
-        <th scope="col">Type</th><th scope="col">Peak</th><th scope="col">Trough</th>
-        <th scope="col" class="num">Depth</th><th scope="col" class="num">Worst day</th>
+        <th scope="col">Type</th><th scope="col">From</th><th scope="col">To</th>
+        <th scope="col" class="num">Move</th><th scope="col" class="num">Key day</th>
         <th scope="col" class="num">Sessions</th><th scope="col" class="num">Posts matched</th>
         <th scope="col">Top matched post</th>
       </tr>
@@ -88,18 +99,18 @@
 </section>
 
 <section class="detail-layout">
-  <aside class="dip-list" aria-label="Detected dips">
+  <aside class="dip-list" aria-label="Detected market moves">
     <h2>Events <span class="count" id="dip-count"></span></h2>
     <ol id="dip-items"></ol>
   </aside>
   <article class="dip-detail" id="dip-detail" aria-live="polite">
-    <p class="empty">Select a dip on the chart or in the list to see the posts that landed during it.</p>
+    <p class="empty">Select an event on the chart or in the list to see the posts that landed during it.</p>
   </article>
 </section>
 
 <footer class="page-foot">
   <p>
-    Prices: Yahoo Finance. Posts:
+    Prices: FRED (St. Louis Fed), Yahoo Finance fallback. Posts:
     <a href="https://github.com/stiles/trump-truth-social-archive">stiles/trump-truth-social-archive</a>.
     All data is pre-built into this repo and loaded from a local file — no backend,
     no database, no network requests. Rebuild with
