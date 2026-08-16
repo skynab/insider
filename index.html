@@ -101,13 +101,15 @@
   <p>
     Prices: Yahoo Finance. Posts:
     <a href="https://github.com/stiles/trump-truth-social-archive">stiles/trump-truth-social-archive</a>.
-    All data is pre-built into static JSON in this repo — no backend, no database.
-    Rebuild with <code>python3 scripts/build_data.py</code>.
+    All data is pre-built into this repo and loaded from a local file — no backend,
+    no database, no network requests. Rebuild with
+    <code>python3 scripts/build_data.py</code>.
   </p>
   <p id="build-stamp"></p>
 </footer>
 
 <script src="vendor/d3.v7.min.js"></script>
+<script src="data/insider-data.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

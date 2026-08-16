@@ -1,7 +1,8 @@
 /* Insider — interactive drawdown explorer.
-   Reads the static JSON built by scripts/build_data.py. No network calls at
-   runtime beyond those files, so this runs fine from GitHub Pages or file://
-   served by any static server. */
+   Data is supplied by data/insider-data.js as a plain global, and D3 is
+   vendored locally, so the page makes no network requests at all. It runs
+   identically from GitHub Pages, from any static server, or by opening
+   index.html straight off disk. */
 
 (function () {
   "use strict";
@@ -17,34 +18,69 @@
     domain: null, // [Date, Date] current zoom, null = full
   };
 
-  const parseDay = d3.timeParse("%Y-%m-%d");
-  const fmtDay = d3.timeFormat("%b %-d, %Y");
-  const fmtShortDay = d3.timeFormat("%b %-d");
-  const fmtNum = d3.format(",.0f");
-  const fmtPct = d3.format("+.2f");
-
-  const tooltip = d3.select("body").append("div").attr("class", "tooltip");
+  // Assigned in boot(), once D3 is confirmed present — declaring them here
+  // would throw before the missing-D3 check could report anything useful.
+  let parseDay, fmtDay, fmtShortDay, fmtNum, fmtPct, tooltip;
 
   // ------------------------------------------------------------ data load
 
-  Promise.all([
-    d3.json("data/market.json"),
-    d3.json("data/dips.json"),
-    d3.json("data/meta.json"),
-  ])
-    .then(([market, dips, meta]) => {
-      state.market = market;
-      state.dipsByIndex = dips.indices;
-      state.meta = meta;
-      state.indexKey = dips.primary || "spx";
+  function fail(heading, err) {
+    console.error(err);
+    document.querySelector("#focus-chart").innerHTML =
+      `<div class="load-error"><strong>${heading}</strong><p>${
+        String(err && err.message ? err.message : err)
+      }</p></div>`;
+  }
+
+  /* Data arrives as a plain <script> tag (data/insider-data.js) that assigns
+     window.INSIDER_DATA, rather than via fetch(). Script tags are not subject
+     to the file:// origin restrictions that block fetch, so the page works
+     when opened directly from disk — no web server required. */
+  function boot() {
+    const data = window.INSIDER_DATA;
+    if (!data) {
+      fail(
+        "Data file missing.",
+        new Error(
+          'data/insider-data.js did not load, so window.INSIDER_DATA is undefined. ' +
+            "Check that the file exists next to index.html — if not, generate it " +
+            'with "python3 scripts/build_data.py".'
+        )
+      );
+      return;
+    }
+    if (typeof d3 === "undefined") {
+      fail(
+        "D3 failed to load.",
+        new Error("vendor/d3.v7.min.js did not load. Check that the file is present.")
+      );
+      return;
+    }
+
+    parseDay = d3.timeParse("%Y-%m-%d");
+    fmtDay = d3.timeFormat("%b %-d, %Y");
+    fmtShortDay = d3.timeFormat("%b %-d");
+    fmtNum = d3.format(",.0f");
+    fmtPct = d3.format("+.2f");
+    tooltip = d3.select("body").append("div").attr("class", "tooltip");
+
+    state.market = data.market;
+    state.dipsByIndex = data.dips.indices;
+    state.meta = data.meta;
+    state.indexKey = data.dips.primary || "spx";
+
+    try {
       init();
-    })
-    .catch((err) => {
-      document.querySelector("#focus-chart").innerHTML =
-        '<p class="empty">Could not load data/. Run <code>python3 scripts/build_data.py</code> ' +
-        "and serve this folder over http (not file://).</p>";
-      console.error(err);
-    });
+    } catch (err) {
+      fail("Data loaded, but rendering failed.", err);
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
 
   // ------------------------------------------------------------- helpers
 

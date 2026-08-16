@@ -33,14 +33,20 @@ after it was posted** — a plain, checkable number that is independent of the s
 
 ## Running it
 
-It is a static site. No build step, no database, no server-side code.
+**Double-click `index.html`.** That is the whole procedure — no server, no build
+step, no install.
+
+The page makes zero network requests. D3 is vendored at `vendor/d3.v7.min.js`, and
+the data is delivered by `data/insider-data.js`, a plain `<script>` tag that
+assigns `window.INSIDER_DATA`. Script tags are not subject to the `file://` origin
+restrictions that block `fetch()`, so opening the file straight off disk works
+exactly like serving it.
+
+If you would rather serve it, any static server works and nothing changes:
 
 ```bash
 python3 -m http.server 8000
 ```
-
-Then open <http://localhost:8000>. (It must be served over HTTP — `file://` blocks
-the `fetch` calls that load `data/`.)
 
 ## Rebuilding the data
 
@@ -54,8 +60,16 @@ Python 3.9+, standard library only. Options:
 python3 scripts/build_data.py --start 2024-01-01 --min-depth 2.0
 ```
 
-This writes `data/market.json`, `data/dips.json` and `data/meta.json`, all of
-which are committed to the repo — that is the "database."
+This writes:
+
+- `data/insider-data.js` — **what the page actually loads.** The full payload
+  wrapped as a global assignment so it works without a server.
+- `data/market.json`, `data/dips.json`, `data/meta.json` — the same data as plain
+  JSON, for reuse elsewhere. The page does not read these.
+
+All of it is committed to the repo — that is the "database." The Python script is
+only a data fetcher, run occasionally to refresh; it is never needed to *view* the
+site.
 
 Sources:
 
@@ -76,10 +90,11 @@ changes, so a deployed copy keeps up with new sessions and new posts.
 ## Layout
 
 ```
-index.html            markup and controls
-styles.css            tokens + layout (light/dark aware)
-app.js                D3 chart, brush, table and detail panel
-vendor/d3.v7.min.js   vendored, no CDN
-scripts/build_data.py fetch → detect dips → score posts → write data/
-data/*.json           generated, committed
+index.html              markup and controls
+styles.css              tokens + layout (light/dark aware)
+app.js                  D3 chart, brush, table and detail panel
+vendor/d3.v7.min.js     vendored, no CDN
+data/insider-data.js    generated — the data the page loads
+data/*.json             generated — same data, for reuse
+scripts/build_data.py   fetch → detect dips → score posts → write data/
 ```

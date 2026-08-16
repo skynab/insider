@@ -175,6 +175,17 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .swatch-trough { background: var(--critical); height: 10px; width: 10px; border-radius: 50%; }
 .swatch-shock { background: var(--series-2); height: 9px; width: 9px; border-radius: 2px; transform: rotate(45deg); }
 
+.load-error {
+  border: 1px solid var(--critical);
+  border-left: 3px solid var(--critical);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  color: var(--text-secondary);
+  max-width: 80ch;
+}
+.load-error strong { color: var(--text-primary); display: block; margin-bottom: 6px; }
+.load-error p { margin: 0; }
+
 .tooltip {
   position: fixed;
   z-index: 20;
