@@ -33,9 +33,37 @@ For each move, every Truth Social post inside its window is scored, and the top
 candidates are kept. Rendered as a D3 line chart with shaded legs, direction
 triangles, a brush-to-zoom strip, hover quotes, a table view, and a detail panel.
 
-### How posts are scored
+### The correlation score
 
-Each post in a move's window gets:
+Every candidate post carries a **0–100 correlation score** — the field to sort and
+filter on. It answers "how well does this post line up with this move?", and its
+four components are shown on every card so the number is never a black box:
+
+| Component | Max | What it measures |
+|---|---|---|
+| **Timing** | 40 | Coverage × freshness. Coverage is the share of the session still ahead of the post — 1.0 before the opening bell, falling linearly to 0 at the close. Freshness decays over ~24h so a post three days early isn't treated as a trigger. Posts after the close score **zero**. |
+| **Move size** | 25 | The session's move in standard deviations of the prior 60 sessions' returns, capped at 3σ. A +9.5% day against 2% vol is not the same event as +9.5% in a wild market. |
+| **Relevance** | 20 | Weighted market-subject keyword match. |
+| **Isolation** | 15 | How few posts competed in the window. Three candidates is far more informative than three hundred. |
+
+Bands: **Strong ≥80** (about the top 8%), **Moderate 60–79**, **Weak <60**.
+
+Sort by **Correlation** and drag **Min correlation** to 80, and the S&P's 71 events
+collapse to 6. Top of that list, at **92**:
+
+> THIS IS A GREAT TIME TO BUY!!! DJT — 9 April 2025, +9.52% (6.8σ)
+
+**What the score cannot do.** It runs on daily closes, so within a single session
+it assumes the move is spread evenly across the day. It cannot show that the market
+actually turned *after* a post. Coverage is deliberately continuous across the
+opening bell — a post six minutes before the open and one seven minutes after are
+near-identical evidence — but "during the key session" always means the ordering is
+assumed, not observed. Intraday prices would settle it; free history for 2024–25 at
+that resolution is not available.
+
+### How the shortlist is built
+
+Before correlation ranks them, posts must survive relevance filtering:
 
 | Input | Effect |
 |---|---|
@@ -45,19 +73,11 @@ Each post in a move's window gets:
 | **Engagement** | Log-scaled favourite count. |
 
 The vocabulary is deliberately direction-neutral: the same subjects drive both
-selloffs and rallies, and the market's own move supplies the sign.
+selloffs and rallies, and the market's own move supplies the sign. Posts matching
+nothing are dropped before correlation is computed.
 
 Each surfaced post also shows **what the index actually did on the first session
-after it was posted** — a plain, checkable number that is independent of the score.
-
-### A worked example
-
-The largest one-day gain in the data is **9 April 2025, +9.52%** — the S&P's best
-session since 2008. Its top two candidates are the 125%-China-tariff and 90-day
-pause announcement (10:18 AM ET), and, ranked second, the post two hours before
-the announcement:
-
-> THIS IS A GREAT TIME TO BUY!!! DJT
+after it was posted** — a plain, checkable number, independent of every score.
 
 ## Running it
 

@@ -372,13 +372,80 @@ def trading_day_for(post_ts: datetime, session_days):
     return None
 
 
+def sigma_by_day(series, window: int = 60):
+    """
+    How unusual each session was, in standard deviations of the preceding
+    `window` sessions' daily returns. A +9.5% day against a 2%-vol backdrop is a
+    different kind of event from a +9.5% day in a market that swings that much
+    weekly, and the correlation score should know the difference.
+    """
+    out = {}
+    for i in range(1, len(series)):
+        lo = max(1, i - window)
+        prior = [series[j]["chg"] for j in range(lo, i)]
+        if len(prior) < 10:
+            continue
+        mean = sum(prior) / len(prior)
+        var = sum((c - mean) ** 2 for c in prior) / len(prior)
+        sd = math.sqrt(var)
+        if sd > 0:
+            out[series[i]["d"]] = abs(series[i]["chg"]) / sd
+    return out
+
+
+def correlation_score(phase, lead_hours, sigma, relevance, considered):
+    """
+    A 0–100 heuristic for how well a post lines up with a market move — a
+    filtering aid, not evidence of cause. Four components, each capped:
+
+      Timing (0–40)      Coverage × freshness. Coverage is the share of the
+                         session still ahead of the post — 1.0 before the bell,
+                         falling linearly to 0 at the close — so it measures how
+                         much of the move the post could actually precede.
+                         Freshness decays over ~24h, so a post three days early
+                         is not treated as a trigger. Posts after the close score
+                         zero; they cannot have caused anything.
+      Magnitude (0–25)   The session's move in standard deviations, capped at 3σ.
+      Relevance (0–20)   Market-subject weight, capped.
+      Isolation (0–15)   Few competing posts in the window means less dilution.
+
+    Coverage is deliberately continuous across the opening bell. A post six
+    minutes before the open and one seven minutes after are near-identical
+    evidence, and an earlier version that ranked all pre-open posts above all
+    same-session ones inverted exactly that pair.
+
+    The daily-close caveat still stands: within a single session these scores
+    assume the move is spread evenly across the day. They cannot establish that
+    the market actually turned after the post.
+    """
+    if phase == "after":
+        timing = 0.0
+    else:
+        hours_in = min(max(-lead_hours, 0.0), 6.5)  # 0 if posted before the bell
+        coverage = 1.0 - hours_in / 6.5
+        freshness = math.exp(-max(lead_hours, 0.0) / 24.0)
+        timing = 40.0 * coverage * freshness
+
+    magnitude = 25.0 * min((sigma or 0.0) / 3.0, 1.0)
+    topic = 20.0 * min(relevance / 12.0, 1.0)
+    isolation = 15.0 * math.exp(-(max(considered, 1) - 1) / 10.0)
+
+    return {
+        "total": round(timing + magnitude + topic + isolation, 1),
+        "timing": round(timing, 1),
+        "magnitude": round(magnitude, 1),
+        "relevance": round(topic, 1),
+        "isolation": round(isolation, 1),
+    }
+
+
 def session_bounds(day: str):
     """(open, close) as ET datetimes for a 'YYYY-MM-DD' session."""
     base = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=ET)
     return base + timedelta(hours=9, minutes=30), base + timedelta(hours=16)
 
 
-def score_posts_for_event(event, posts, index_by_day, session_days, limit=6):
+def score_posts_for_event(event, posts, index_by_day, session_days, sigmas, limit=6):
     """
     Score posts inside an event's window.
 
@@ -444,8 +511,18 @@ def score_posts_for_event(event, posts, index_by_day, session_days, limit=6):
             }
         )
 
-    scored.sort(key=lambda p: p["score"], reverse=True)
-    return scored[:limit], len(scored)
+    # Correlation needs the final candidate count, so it is a second pass.
+    sigma = sigmas.get(event["key_day"])
+    for p in scored:
+        parts = correlation_score(
+            p["phase"], p["lead_hours"], sigma, p["relevance"], len(scored)
+        )
+        p["corr"] = parts.pop("total")
+        p["corr_parts"] = parts
+
+    scored.sort(key=lambda p: p["corr"], reverse=True)
+    top = scored[:limit]
+    return top, len(scored)
 
 
 # --------------------------------------------------------------------- main
@@ -493,6 +570,7 @@ def main():
         series = entry["series"]
         index_by_day = {row["d"]: row for row in series}
         session_days = [row["d"] for row in series]
+        sigmas = sigma_by_day(series)
 
         # A swing leg can be a single session, which would duplicate the
         # shock/surge for that same day — and the single-session class is the
@@ -510,10 +588,12 @@ def main():
         events = [e for group in groups.values() for e in group]
         for event in events:
             matches, considered = score_posts_for_event(
-                event, posts, index_by_day, session_days
+                event, posts, index_by_day, session_days, sigmas
             )
             event["posts"] = matches
             event["posts_considered"] = considered
+            event["corr"] = matches[0]["corr"] if matches else 0.0
+            event["sigma"] = round(sigmas.get(event["key_day"], 0.0), 2)
 
         events.sort(key=lambda e: e["end_date"])
         events_by_index[key] = events

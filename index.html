@@ -56,6 +56,17 @@
     </div>
   </div>
   <div class="control">
+    <label for="corr-range">Min correlation <output id="corr-out">0</output></label>
+    <input type="range" id="corr-range" min="0" max="90" step="5" value="0">
+  </div>
+  <div class="control">
+    <label for="sort-toggle">Sort by</label>
+    <div class="segmented" id="sort-toggle" role="group">
+      <button type="button" data-sort="size" class="is-active">Size</button>
+      <button type="button" data-sort="corr">Correlation</button>
+    </div>
+  </div>
+  <div class="control">
     <label for="view-toggle">View</label>
     <div class="segmented" id="view-toggle" role="group">
       <button type="button" data-view="chart" class="is-active">Chart</button>
@@ -90,7 +101,8 @@
       <tr>
         <th scope="col">Type</th><th scope="col">From</th><th scope="col">To</th>
         <th scope="col" class="num">Move</th><th scope="col" class="num">Key day</th>
-        <th scope="col" class="num">Sessions</th><th scope="col" class="num">Posts matched</th>
+        <th scope="col" class="num">Sessions</th><th scope="col" class="num">Corr.</th>
+        <th scope="col" class="num">Posts</th>
         <th scope="col">Top matched post</th>
       </tr>
     </thead>

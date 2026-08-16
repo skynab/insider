@@ -289,9 +289,42 @@ tbody tr:hover { background: var(--wash); }
 .dip-list li.is-selected { background: var(--wash); box-shadow: inset 3px 0 0 var(--critical); }
 .dip-list .li-date { font-size: 13px; }
 .dip-list .li-sub { color: var(--text-muted); font-size: 12px; }
+.dip-list .li-right { display: flex; align-items: center; gap: 10px; }
 .dip-list .li-depth { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dip-list .li-depth.neg { color: var(--critical); }
 .dip-list .li-depth.pos { color: var(--rally); }
+
+/* Correlation score. Bands are reinforced by the printed number and a text
+   label wherever they appear, so the color is never the only cue. */
+.corr-pill {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: center;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+}
+.corr-pill.band-strong { background: var(--rally-fill); border-color: var(--rally); color: var(--rally); }
+.corr-pill.band-moderate { background: var(--wash); border-color: var(--border); color: var(--text-secondary); }
+.corr-pill.band-weak { background: none; border-color: var(--border); color: var(--text-muted); }
+
+.tt-corr {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.tt-corr.band-strong { color: var(--rally); }
+.tt-corr.band-moderate { color: var(--text-secondary); }
+.tt-corr.band-weak { color: var(--text-muted); }
+
+.corr-parts {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 10px;
+}
 
 .dip-detail {
   background: var(--surface-1);
@@ -328,12 +361,19 @@ tbody tr:hover { background: var(--wash); }
 .post-when { font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .post-score {
   font-size: 12px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   background: var(--wash);
+  border: 1px solid var(--border);
   border-radius: 20px;
   padding: 2px 10px;
   white-space: nowrap;
+}
+.post-score.band-strong {
+  background: var(--rally-fill);
+  border-color: var(--rally);
+  color: var(--rally);
 }
 .post-text { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .post-foot { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12.5px; color: var(--text-muted); }

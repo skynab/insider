@@ -15,6 +15,8 @@
     minDepth: 2,
     direction: "all", // all | down | up
     span: "all",      // all | multi | single
+    minCorr: 0,
+    sort: "size",     // size | corr
     selectedId: null,
     domain: null, // [Date, Date] current zoom, null = full
   };
@@ -95,9 +97,27 @@
       (d) =>
         d.move_pct >= state.minDepth &&
         (state.direction === "all" || d.direction === state.direction) &&
-        (state.span === "all" || spanOf(d) === state.span)
+        (state.span === "all" || spanOf(d) === state.span) &&
+        (d.corr || 0) >= state.minCorr
     );
   }
+
+  /** Events in the order the list and table present them. */
+  function sortedDips() {
+    const rows = activeDips().slice();
+    return state.sort === "corr"
+      ? rows.sort((a, b) => (b.corr || 0) - (a.corr || 0))
+      : rows.sort((a, b) => b.move_pct - a.move_pct);
+  }
+
+  /* Correlation bands. 80 sits around the 92nd percentile of the S&P set, so
+     "Strong" stays a short list rather than a third of the events. */
+  function corrBand(c) {
+    if (c >= 80) return "strong";
+    if (c >= 60) return "moderate";
+    return "weak";
+  }
+  const BAND_LABEL = { strong: "Strong", moderate: "Moderate", weak: "Weak" };
 
   function spanOf(d) {
     return d.trading_days === 1 ? "single" : "multi";
@@ -171,6 +191,20 @@
       state.minDepth = +this.value;
       d3.select("#depth-out").text(d3.format(".1f")(state.minDepth) + "%");
       if (selectedDip() === null) state.selectedId = null;
+      renderAll();
+    });
+
+    d3.select("#corr-range").on("input", function () {
+      state.minCorr = +this.value;
+      d3.select("#corr-out").text(this.value);
+      if (!selectedDip()) state.selectedId = null;
+      renderAll();
+    });
+
+    d3.selectAll("#sort-toggle button").on("click", function () {
+      state.sort = this.dataset.sort;
+      d3.selectAll("#sort-toggle button").classed("is-active", false);
+      d3.select(this).classed("is-active", true);
       renderAll();
     });
 
@@ -441,6 +475,12 @@
     let html =
       `<div class="tt-date">${KIND_LABEL[d.kind]} · ${span}</div>` +
       `<div class="tt-value move ${isUp(d) ? "pos" : "neg"}">${signed(movePct(d))}</div>`;
+    if (d.corr) {
+      const band = corrBand(d.corr);
+      html +=
+        `<div class="tt-corr band-${band}">Correlation ${d.corr.toFixed(0)}` +
+        ` · ${BAND_LABEL[band]}</div>`;
+    }
 
     const top = d.posts[0];
     if (top) {
@@ -535,7 +575,7 @@
   }
 
   function renderDipList() {
-    const dips = activeDips().slice().sort((a, b) => b.move_pct - a.move_pct);
+    const dips = sortedDips();
     d3.select("#dip-count").text(`(${dips.length})`);
 
     const items = d3
@@ -561,16 +601,22 @@
           (spanOf(d) === "single" ? "" : ` · ${d.trading_days} sessions`) +
           ` · ${d.posts.length} post${d.posts.length === 1 ? "" : "s"}`
       );
-    items
+    const right = items.append("div").attr("class", "li-right");
+    right
       .append("div")
       .attr("class", (d) => "li-depth " + (isUp(d) ? "pos" : "neg"))
       .text((d) => signed(movePct(d), 1));
+    right
+      .append("div")
+      .attr("class", (d) => "corr-pill band-" + corrBand(d.corr || 0))
+      .attr("title", "Correlation score — how well the top post lines up with this move")
+      .text((d) => (d.corr ? d.corr.toFixed(0) : "—"));
   }
 
   // -------------------------------------------------------------- table
 
   function renderTable() {
-    const dips = activeDips().slice().sort((a, b) => b.move_pct - a.move_pct);
+    const dips = sortedDips();
     const rows = d3
       .select("#dip-table tbody")
       .selectAll("tr")
@@ -588,6 +634,7 @@
     cell((d) => signed(movePct(d)), "num");
     cell((d) => signed(d.key_day_pct), "num");
     cell((d) => d.trading_days, "num");
+    cell((d) => (d.corr ? d.corr.toFixed(0) : "—"), "num");
     cell((d) => d.posts.length, "num");
     cell((d) => (d.posts[0] ? truncate(d.posts[0].text, 90) : "—"));
   }
@@ -673,7 +720,9 @@
             (single
               ? "between the previous close and this one — the only posts that could have moved it. "
               : `between ${fmtShortDay(parseDay(dip.start_date))} and ${fmtShortDay(parseDay(dip.end_date))}. `) +
-            "Ranked by subject relevance, proximity to the key session, and engagement."
+            "Ranked by correlation score — timing coverage, the move's size in σ, " +
+            "subject relevance, and how few posts competed. It measures how well a " +
+            "post lines up with the move, not that it caused it."
           : "No market-relevant posts were published during this window."
       );
 
@@ -695,9 +744,27 @@
           month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
         })} · ${rel}`;
       });
-    head.append("span").attr("class", "post-score").text((p) => `match ${p.score.toFixed(1)}`);
+    head
+      .append("span")
+      .attr("class", (p) => "post-score band-" + corrBand(p.corr))
+      .attr(
+        "title",
+        "Correlation score 0–100: timing coverage, move size in σ, subject relevance, and how few posts competed"
+      )
+      .text((p) => `corr ${p.corr.toFixed(0)} · ${BAND_LABEL[corrBand(p.corr)]}`);
 
     cards.append("p").attr("class", "post-text").text((p) => p.text);
+
+    cards
+      .append("div")
+      .attr("class", "corr-parts")
+      .text((p) => {
+        const c = p.corr_parts;
+        return (
+          `timing ${c.timing} / 40 · move size ${c.magnitude} / 25 · ` +
+          `relevance ${c.relevance} / 20 · isolation ${c.isolation} / 15`
+        );
+      });
 
     const foot = cards.append("div").attr("class", "post-foot");
     foot
