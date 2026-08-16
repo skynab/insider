@@ -285,48 +285,29 @@
 
     plot.append("path").datum(data).attr("class", "index-line").attr("d", line);
 
-    // Event markers: circles for drawdown troughs, diamonds for single-session
-    // shocks, so the two classes stay distinguishable without relying on color.
-    const symbol = d3.symbol();
-    plot
-      .append("g")
-      .selectAll("path")
-      .data(dips)
-      .join("path")
-      .attr("class", (d) =>
-        "trough-dot marker-" + d.kind + (d.id === state.selectedId ? " is-selected" : "")
-      )
-      .attr("transform", (d) => `translate(${x(parseDay(d.trough_date))},${y(d.trough_close)})`)
-      .attr("d", (d) =>
-        symbol
-          .type(d.kind === "shock" ? d3.symbolDiamond : d3.symbolCircle)
-          .size(markerArea(d.depth_pct))()
-      )
-      .on("mousemove", (event, d) => showTip(dipTip(d), event))
-      .on("mouseleave", hideTip)
-      .on("click", (event, d) => {
-        event.stopPropagation();
-        selectDip(d.id);
-      });
-
-    g.append("g")
-      .attr("class", "axis")
-      .attr("transform", `translate(0,${ih})`)
-      .call(d3.axisBottom(x).ticks(Math.max(3, Math.floor(iw / 110))));
-
-    g.append("g")
-      .attr("class", "axis")
-      .call(d3.axisLeft(y).ticks(6).tickFormat(d3.format(",")));
-
-    // Crosshair + tooltip layer.
-    const cross = g.append("line").attr("class", "crosshair").attr("y1", 0).attr("y2", ih).style("opacity", 0);
-    const dot = g.append("circle").attr("class", "hover-dot").attr("r", 4.5).style("opacity", 0);
+    // Crosshair capture area. This must sit BELOW the markers in document order
+    // or it swallows their hover; the crosshair marks themselves are added after
+    // and are pointer-transparent.
     const bisect = d3.bisector((d) => d.date).center;
-
-    g.append("rect")
+    const capture = plot
+      .append("rect")
       .attr("width", iw)
       .attr("height", ih)
-      .attr("fill", "transparent")
+      .attr("fill", "transparent");
+
+    const cross = plot
+      .append("line")
+      .attr("class", "crosshair")
+      .attr("y1", 0)
+      .attr("y2", ih)
+      .style("opacity", 0);
+    const dot = plot
+      .append("circle")
+      .attr("class", "hover-dot")
+      .attr("r", 4.5)
+      .style("opacity", 0);
+
+    capture
       .on("mousemove", function (event) {
         const mx = d3.pointer(event, this)[0];
         const d = data[bisect(data, x.invert(mx))];
@@ -346,12 +327,68 @@
         dot.style("opacity", 0);
         hideTip();
       });
+
+    // Event markers: circles for drawdown troughs, diamonds for single-session
+    // shocks, so the two classes stay distinguishable without relying on color.
+    // Added last so their hover wins over the crosshair capture area.
+    const symbol = d3.symbol();
+    const markers = plot
+      .append("g")
+      .selectAll("g")
+      .data(dips)
+      .join("g")
+      .attr("transform", (d) => `translate(${x(parseDay(d.trough_date))},${y(d.trough_close)})`)
+      .on("mousemove", (event, d) => showTip(dipTip(d), event))
+      .on("mouseleave", hideTip)
+      .on("click", (event, d) => {
+        event.stopPropagation();
+        selectDip(d.id);
+      });
+
+    // Invisible hit target, always comfortably larger than the mark itself.
+    markers
+      .append("circle")
+      .attr("class", "marker-hit")
+      .attr("r", (d) => Math.max(13, markerRadius(d.depth_pct) + 7));
+
+    markers
+      .append("path")
+      .attr("class", (d) =>
+        "trough-dot marker-" + d.kind + (d.id === state.selectedId ? " is-selected" : "")
+      )
+      .attr("d", (d) =>
+        symbol
+          .type(d.kind === "shock" ? d3.symbolDiamond : d3.symbolCircle)
+          .size(markerArea(d.depth_pct))()
+      );
+
+    g.append("g")
+      .attr("class", "axis")
+      .attr("transform", `translate(0,${ih})`)
+      .call(d3.axisBottom(x).ticks(Math.max(3, Math.floor(iw / 110))));
+
+    g.append("g")
+      .attr("class", "axis")
+      .call(d3.axisLeft(y).ticks(6).tickFormat(d3.format(",")));
   }
 
-  /** Marker area in px², scaled so a 2% and a 19% dip both stay legible. */
+  /** Marker radius in px, scaled so a 2% and a 19% dip both stay legible. */
+  function markerRadius(depth) {
+    return Math.max(4.5, Math.min(11, 3 + depth * 0.7));
+  }
+
   function markerArea(depth) {
-    const r = Math.max(4.5, Math.min(11, 3 + depth * 0.7));
+    const r = markerRadius(depth);
     return Math.PI * r * r;
+  }
+
+  /** Escape text bound for innerHTML — post content is arbitrary. */
+  function esc(text) {
+    return String(text).replace(
+      /[&<>"']/g,
+      (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
   }
 
   function dipTip(d) {
@@ -359,9 +396,32 @@
       d.kind === "shock"
         ? fmtDay(parseDay(d.trough_date)) + " · single session"
         : `${fmtShortDay(parseDay(d.peak_date))} → ${fmtDay(parseDay(d.trough_date))} · ${d.trading_days} sessions`;
-    return `<div class="tt-date">${span}</div>
-            <div class="tt-value move neg">−${d.depth_pct.toFixed(2)}%</div>
-            <div class="tt-date">${d.posts.length} candidate post${d.posts.length === 1 ? "" : "s"}</div>`;
+
+    let html =
+      `<div class="tt-date">${span}</div>` +
+      `<div class="tt-value move neg">−${d.depth_pct.toFixed(2)}%</div>`;
+
+    const top = d.posts[0];
+    if (top) {
+      const when = new Date(top.ts).toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+      });
+      const rel =
+        top.phase === "before"
+          ? lead(top.lead_hours) + " before the worst session"
+          : top.phase === "during"
+          ? "during the worst session"
+          : "after that session closed";
+      html +=
+        `<blockquote class="tt-quote">${esc(truncate(top.text, 180))}</blockquote>` +
+        `<div class="tt-date">${esc(when)} · ${rel}</div>` +
+        (d.posts.length > 1
+          ? `<div class="tt-more">+${d.posts.length - 1} more · click to see all</div>`
+          : `<div class="tt-more">Click to inspect</div>`);
+    } else {
+      html += `<div class="tt-date">No market-relevant posts in this window</div>`;
+    }
+    return html;
   }
 
   // ------------------------------------------------------ context/brush
