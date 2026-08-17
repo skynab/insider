@@ -1,5 +1,7 @@
 # insider
 
+https://skynab.github.io/insider/
+
 An interactive chart of US stock-index moves since January 2024 — **declines and
 rallies alike** — with the Donald Trump Truth Social posts that landed during each
 one surfaced alongside.
