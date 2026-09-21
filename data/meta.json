@@ -1,14 +1,14 @@
 {
-  "built_at": "2026-09-14T16:43:49.101048Z",
+  "built_at": "2026-09-21T16:44:05.401575Z",
   "start": "2024-01-01",
   "min_depth_pct": 2.0,
   "event_count": {
     "spx": 113,
-    "ndx": 201,
+    "ndx": 204,
     "dji": 91
   },
-  "post_count": 16395,
-  "last_session": "2026-09-11",
+  "post_count": 16469,
+  "last_session": "2026-09-18",
   "sources": {
     "prices": {
       "spx": "FRED SP500",
